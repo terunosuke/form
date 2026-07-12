@@ -3,7 +3,8 @@ import { layoutBattens } from "./batten.js";
 import type { FormTieResult, PconResult } from "./hardware.js";
 import { calcFormTies, calcPcons } from "./hardware.js";
 import type { FormTieSpec, PconSpec, PipeSpec, PlywoodSpec, SeparatorSpec } from "./masters.js";
-import type { LayoutOrigin } from "./defaults.js";
+import type { BeamBottomWidthRule, LayoutOrigin } from "./defaults.js";
+import { beamBottomWidth, CONFIRMED_DEFAULTS } from "./defaults.js";
 import type { PipeLayoutResult } from "./pipe.js";
 import { layoutPipes } from "./pipe.js";
 import type { PitchRule } from "./pitch.js";
@@ -28,7 +29,34 @@ export type TakeoffFaceType =
   | "column_side_1"
   | "column_side_2"
   | "column_side_3"
-  | "column_side_4";
+  | "column_side_4"
+  | "beam_side_left"
+  | "beam_side_right"
+  | "beam_bottom"
+  | "beam_end_start"
+  | "beam_end_end"
+  | "slab_bottom"
+  | "slab_edge_1"
+  | "slab_edge_2"
+  | "slab_edge_3"
+  | "slab_edge_4"
+  | "footing_side_1"
+  | "footing_side_2"
+  | "footing_side_3"
+  | "footing_side_4"
+  | "footing_bottom";
+
+export type MemberKind = "wall" | "column" | "beam" | "slab" | "footing";
+
+/** 脱型区分(設計書 §10)。梁底は梁側と別区分で最後まで残置可能 */
+export type StrippingGroup =
+  | "column"
+  | "wall"
+  | "beam_side"
+  | "beam_bottom"
+  | "slab_edge"
+  | "slab_bottom"
+  | "footing";
 
 /** 材料条件一式(材料設定画面 §12 で入力される内容) */
 export interface MaterialConfig {
@@ -56,6 +84,9 @@ export interface FaceTakeoff {
   faceId: string;
   memberId: string;
   faceType: TakeoffFaceType;
+  strippingGroup: StrippingGroup;
+  /** 支保工と関連する材料か(スラブ底・梁底) */
+  supportRelated: boolean;
   width: number;
   height: number;
   area: number;
@@ -81,7 +112,7 @@ export interface PairTakeoff {
 
 export interface MemberTakeoffResult {
   memberId: string;
-  memberKind: "wall" | "column";
+  memberKind: MemberKind;
   faces: FaceTakeoff[];
   pairs: PairTakeoff[];
   blockers: MissingInput[];
@@ -117,6 +148,8 @@ function takeoffFace(input: {
   faceId: string;
   memberId: string;
   faceType: TakeoffFaceType;
+  strippingGroup: StrippingGroup;
+  supportRelated?: boolean;
   width: number;
   height: number;
   deductions: Rect[];
@@ -150,6 +183,8 @@ function takeoffFace(input: {
     faceId: input.faceId,
     memberId: input.memberId,
     faceType: input.faceType,
+    strippingGroup: input.strippingGroup,
+    supportRelated: input.supportRelated ?? false,
     width,
     height,
     area: width * height,
@@ -214,11 +249,12 @@ function takeoffPair(input: {
 
 function summarize(
   memberId: string,
-  memberKind: "wall" | "column",
+  memberKind: MemberKind,
   faces: FaceTakeoff[],
   pairs: PairTakeoff[],
+  extraBlockers: MissingInput[] = [],
 ): MemberTakeoffResult {
-  const blockers = pairs.flatMap((p) => p.separator.blockers);
+  const blockers = [...extraBlockers, ...pairs.flatMap((p) => p.separator.blockers)];
   const warnings = pairs.flatMap((p) => p.separator.warnings);
   const errors = [
     ...faces.flatMap((f) => f.errors),
@@ -270,6 +306,7 @@ export function takeoffWall(input: WallTakeoffInput, config: MaterialConfig): Me
         faceId: `${input.memberId}-${side}`,
         memberId: input.memberId,
         faceType: side === "A" ? "wall_side_A" : "wall_side_B",
+        strippingGroup: "wall",
         width: input.length,
         height: input.height,
         deductions: (side === "A" ? input.deductionsA : input.deductionsB) ?? [],
@@ -321,6 +358,7 @@ export function takeoffColumn(
         faceId: `${input.memberId}-F${i + 1}`,
         memberId: input.memberId,
         faceType: `column_side_${i + 1}` as TakeoffFaceType,
+        strippingGroup: "column",
         width: faceWidths[i]!,
         height: input.height,
         deductions: [],
@@ -360,4 +398,246 @@ export function takeoffColumn(
     );
   }
   return result;
+}
+
+// ---- 梁(§9 梁。梁側左右・梁底・梁端部を別管理、梁底は別脱型区分) ----
+
+export interface BeamTakeoffInput {
+  memberId: string;
+  length: number; // 梁長さ
+  width: number; // 梁幅
+  depth: number; // 梁せい
+  /** 梁側型枠の高さ。省略時は梁せい(スラブとの取り合いで減る場合に指定) */
+  sideHeightLeft?: number;
+  sideHeightRight?: number;
+  sideFormLeft: boolean;
+  sideFormRight: boolean;
+  bottomForm: boolean;
+  endForms?: { start: boolean; end: boolean };
+  /** 梁底幅の算出基準(確定 U-5: 既定は底勝ち = 梁幅) */
+  bottomWidthRule?: BeamBottomWidthRule;
+  /** side_wins 時に必要な側枠の構成寸法 */
+  sideBuildUp?: { plywoodThickness: number; battenDepth: number };
+  /** 梁側左右がそろう場合にセパを配置するか(既定 true) */
+  separatorsOnSides?: boolean;
+  deductionsLeft?: Rect[];
+  deductionsRight?: Rect[];
+}
+
+export function takeoffBeam(input: BeamTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
+  const faces: FaceTakeoff[] = [];
+  const blockers: MissingInput[] = [];
+  const hLeft = input.sideHeightLeft ?? input.depth;
+  const hRight = input.sideHeightRight ?? input.depth;
+
+  if (input.sideFormLeft) {
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-SL`,
+        memberId: input.memberId,
+        faceType: "beam_side_left",
+        strippingGroup: "beam_side",
+        width: input.length,
+        height: hLeft,
+        deductions: input.deductionsLeft ?? [],
+        config,
+      }),
+    );
+  }
+  if (input.sideFormRight) {
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-SR`,
+        memberId: input.memberId,
+        faceType: "beam_side_right",
+        strippingGroup: "beam_side",
+        width: input.length,
+        height: hRight,
+        deductions: input.deductionsRight ?? [],
+        config,
+      }),
+    );
+  }
+  if (input.bottomForm) {
+    // 梁底は梁側と別オブジェクト・別脱型区分(§10)。幅は U-5 の設定で決定
+    const rule = input.bottomWidthRule ?? CONFIRMED_DEFAULTS.beamBottomWidthRule;
+    const bw = beamBottomWidth(input.width, rule, input.sideBuildUp);
+    if (bw === null) {
+      blockers.push({
+        code: "BEAM_BOTTOM_WIDTH_UNDEFINED",
+        message:
+          `梁 ${input.memberId} の梁底幅を側勝ちで算出するには、側枠のベニヤ厚と桟木せいの入力が必要です`,
+      });
+    } else {
+      const face = takeoffFace({
+        faceId: `${input.memberId}-B`,
+        memberId: input.memberId,
+        faceType: "beam_bottom",
+        strippingGroup: "beam_bottom",
+        supportRelated: true,
+        width: input.length, // U = 梁長さ方向
+        height: bw.width, // V = 梁幅方向(水平面)
+        deductions: [],
+        config,
+      });
+      face.notes.push(bw.formula);
+      faces.push(face);
+    }
+  }
+  const ends = input.endForms ?? { start: false, end: false };
+  for (const [key, flag] of [["start", ends.start], ["end", ends.end]] as const) {
+    if (!flag) continue;
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-E${key === "start" ? "S" : "E"}`,
+        memberId: input.memberId,
+        faceType: key === "start" ? "beam_end_start" : "beam_end_end",
+        strippingGroup: "beam_side",
+        width: input.width,
+        height: input.depth,
+        deductions: [],
+        config,
+      }),
+    );
+  }
+
+  const pairs: PairTakeoff[] = [];
+  if (input.sideFormLeft && input.sideFormRight && (input.separatorsOnSides ?? true)) {
+    pairs.push(
+      takeoffPair({
+        pairId: `${input.memberId}-pair-sides`,
+        faceIdA: `${input.memberId}-SL`,
+        faceIdB: `${input.memberId}-SR`,
+        width: input.length,
+        height: Math.min(hLeft, hRight),
+        formGap: input.width, // 型枠同士の間隔 = 梁幅
+        formworkType: "double",
+        config,
+      }),
+    );
+  }
+  return summarize(input.memberId, "beam", faces, pairs, blockers);
+}
+
+// ---- スラブ(§9 スラブ。スラブ底・外周端部。開口は将来対応) ----
+
+export interface SlabTakeoffInput {
+  memberId: string;
+  lengthX: number;
+  lengthY: number;
+  thickness: number; // スラブ厚 = 端部型枠の高さ
+  bottomForm: boolean;
+  /** 外周 4 辺(X-, X+, Y-, Y+ の順)の端部型枠有無。既定すべて false */
+  edgeFormFlags?: [boolean, boolean, boolean, boolean];
+}
+
+export function takeoffSlab(input: SlabTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
+  const faces: FaceTakeoff[] = [];
+  if (input.bottomForm) {
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-B`,
+        memberId: input.memberId,
+        faceType: "slab_bottom",
+        strippingGroup: "slab_bottom",
+        supportRelated: true,
+        width: input.lengthX, // U = X 方向
+        height: input.lengthY, // V = Y 方向(水平面)
+        deductions: [],
+        config,
+      }),
+    );
+  }
+  const flags = input.edgeFormFlags ?? [false, false, false, false];
+  const edgeWidths = [input.lengthY, input.lengthY, input.lengthX, input.lengthX];
+  for (let i = 0; i < 4; i++) {
+    if (!flags[i]) continue;
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-E${i + 1}`,
+        memberId: input.memberId,
+        faceType: `slab_edge_${i + 1}` as TakeoffFaceType,
+        strippingGroup: "slab_edge",
+        width: edgeWidths[i]!,
+        height: input.thickness,
+        deductions: [],
+        config,
+      }),
+    );
+  }
+  // スラブにはセパレーターを配置しない
+  return summarize(input.memberId, "slab", faces, []);
+}
+
+// ---- フーチング(§9 フーチング。各側面の有無選択、底面は既定なし) ----
+
+export interface FootingTakeoffInput {
+  memberId: string;
+  width: number; // X 方向
+  depth: number; // Y 方向
+  height: number;
+  /** 側面 1〜4(X-, X+, Y-, Y+)の型枠有無。既定すべて true */
+  sideFlags?: [boolean, boolean, boolean, boolean];
+  /** 底面型枠(既定 false。必要な場合のみ手動で true) */
+  bottomForm?: boolean;
+}
+
+export function takeoffFooting(
+  input: FootingTakeoffInput,
+  config: MaterialConfig,
+): MemberTakeoffResult {
+  const flags = input.sideFlags ?? [true, true, true, true];
+  // 側面 1・2 は幅 = depth(X∓ 面)、側面 3・4 は幅 = width(Y∓ 面)
+  const faceWidths = [input.depth, input.depth, input.width, input.width];
+  const faces: FaceTakeoff[] = [];
+  for (let i = 0; i < 4; i++) {
+    if (!flags[i]) continue;
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-F${i + 1}`,
+        memberId: input.memberId,
+        faceType: `footing_side_${i + 1}` as TakeoffFaceType,
+        strippingGroup: "footing",
+        width: faceWidths[i]!,
+        height: input.height,
+        deductions: [],
+        config,
+      }),
+    );
+  }
+  if (input.bottomForm) {
+    faces.push(
+      takeoffFace({
+        faceId: `${input.memberId}-B`,
+        memberId: input.memberId,
+        faceType: "footing_bottom",
+        strippingGroup: "footing",
+        width: input.width,
+        height: input.depth,
+        deductions: [],
+        config,
+      }),
+    );
+  }
+  const pairs: PairTakeoff[] = [];
+  const pairDefs = [
+    { a: 0, b: 1, gap: input.width, w: input.depth }, // X-/X+ 面ペア: 間隔 = 幅
+    { a: 2, b: 3, gap: input.depth, w: input.width }, // Y-/Y+ 面ペア: 間隔 = 奥行き
+  ];
+  for (const pd of pairDefs) {
+    if (!flags[pd.a] || !flags[pd.b]) continue;
+    pairs.push(
+      takeoffPair({
+        pairId: `${input.memberId}-pair-F${pd.a + 1}F${pd.b + 1}`,
+        faceIdA: `${input.memberId}-F${pd.a + 1}`,
+        faceIdB: `${input.memberId}-F${pd.b + 1}`,
+        width: pd.w,
+        height: input.height,
+        formGap: pd.gap,
+        formworkType: "double",
+        config,
+      }),
+    );
+  }
+  return summarize(input.memberId, "footing", faces, pairs);
 }
