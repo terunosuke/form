@@ -529,6 +529,8 @@ export interface SlabTakeoffInput {
   bottomForm: boolean;
   /** 外周 4 辺(X-, X+, Y-, Y+ の順)の端部型枠有無。既定すべて false */
   edgeFormFlags?: [boolean, boolean, boolean, boolean];
+  /** スラブ底の控除領域(梁との取り合いなど。底面UV = X×Y) */
+  deductionsBottom?: Rect[];
 }
 
 export function takeoffSlab(input: SlabTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
@@ -543,7 +545,7 @@ export function takeoffSlab(input: SlabTakeoffInput, config: MaterialConfig): Me
         supportRelated: true,
         width: input.lengthX, // U = X 方向
         height: input.lengthY, // V = Y 方向(水平面)
-        deductions: [],
+        deductions: input.deductionsBottom ?? [],
         config,
       }),
     );

@@ -11,6 +11,7 @@ import {
 } from "../core/junctions.js";
 import { initPlan, type PlanApi, type UnderlayView } from "./plan.js";
 import { initThreeView, type LayerName, type ThreeViewApi } from "./three-view.js";
+import { buildReportHtml } from "./report.js";
 import type {
   BattenSpec, FormTieSpec, PconSpec, PipeSpec, PlywoodSpec, SeparatorSpec,
 } from "../core/masters.js";
@@ -89,7 +90,14 @@ const materialFields: { group: string; fields: FieldDef[] }[] = [
       { id: "pipe-stocks", label: "標準長さ (mm, カンマ区切り)", type: "text", value: "2000,3000,4000" },
       { id: "pipe-per", label: "一段当たり本数", type: "number", value: 1 },
       { id: "pipe-lines", label: "列数", type: "number", value: 1 },
-      { id: "pipe-pitch", label: "鉛直ピッチ (mm)", type: "number", value: 600 },
+      {
+        id: "pipe-vmode", label: "鉛直ピッチ方式", type: "select", value: "uniform",
+        options: [["uniform", "等間隔"], ["two_stage", "二段階(下部/上部)"]],
+      },
+      { id: "pipe-pitch", label: "鉛直ピッチ (mm)/二段階時は下部", type: "number", value: 600 },
+      { id: "pipe-boundary", label: "二段階: 境界高さ (mm)", type: "number", value: 1500 },
+      { id: "pipe-upper-pitch", label: "二段階: 上部ピッチ (mm)", type: "number", value: 900 },
+      { id: "pipe-place-boundary", label: "二段階: 境界位置に配置", type: "checkbox", value: true },
       { id: "pipe-bottom", label: "最下段の高さ (mm)", type: "number", value: 300 },
       { id: "pipe-top", label: "最上段からの離れ (mm)", type: "number", value: 150 },
       { id: "pipe-lap", label: "重ね長さ (mm)", type: "number", value: 300 },
@@ -108,6 +116,10 @@ const materialFields: { group: string; fields: FieldDef[] }[] = [
       { id: "sep-hstart", label: "左端から最初まで (mm)", type: "number", value: 150 },
       { id: "sep-hend", label: "右端から最後まで (mm)", type: "number", value: 150 },
       { id: "sep-vpitch", label: "鉛直ピッチ (mm)", type: "number", value: 450 },
+      { id: "sep-two", label: "二段階配置(下部/上部で変更)", type: "checkbox", value: false },
+      { id: "sep-boundary", label: "二段階: 境界高さ (mm)", type: "number", value: 1500 },
+      { id: "sep-hpitch2", label: "二段階: 上部水平ピッチ (mm)", type: "number", value: 600 },
+      { id: "sep-vpitch2", label: "二段階: 上部鉛直ピッチ (mm)", type: "number", value: 600 },
       { id: "sep-bottom", label: "最下段の高さ (mm)", type: "number", value: 150 },
       { id: "sep-top", label: "最上段からの離れ (mm)", type: "number", value: 150 },
       { id: "sep-manual", label: "長さ手入力 (mm, 空=型枠間隔)", type: "text", value: "" },
@@ -194,6 +206,36 @@ function lengths(id: string, errors: string[], label: string, allowEmpty = false
   return arr;
 }
 
+function buildSeparatorBands(errors: string[]) {
+  const hPitch = (pitch: number) => ({
+    type: "uniform" as const,
+    pitch,
+    mode: "fixed_pitch" as const,
+    startOffset: num("sep-hstart", errors, "セパ左端距離"),
+    endOffset: num("sep-hend", errors, "セパ右端距離"),
+  });
+  if (!checked("sep-two")) {
+    return [{
+      fromLevel: 0, toLevel: 100000,
+      horizontalPitch: hPitch(num("sep-hpitch", errors, "セパ水平ピッチ")),
+      verticalPitch: num("sep-vpitch", errors, "セパ鉛直ピッチ"),
+    }];
+  }
+  const boundary = num("sep-boundary", errors, "セパ二段階境界高さ");
+  return [
+    {
+      fromLevel: 0, toLevel: boundary,
+      horizontalPitch: hPitch(num("sep-hpitch", errors, "セパ下部水平ピッチ")),
+      verticalPitch: num("sep-vpitch", errors, "セパ下部鉛直ピッチ"),
+    },
+    {
+      fromLevel: boundary, toLevel: 100000,
+      horizontalPitch: hPitch(num("sep-hpitch2", errors, "セパ上部水平ピッチ")),
+      verticalPitch: num("sep-vpitch2", errors, "セパ上部鉛直ピッチ"),
+    },
+  ];
+}
+
 function readMaterials(errors: string[]): MaterialConfig {
   const rounding = { type: "ceil_unit", unit: 1 } as const;
   const plywood: PlywoodSpec = {
@@ -276,31 +318,33 @@ function readMaterials(errors: string[]): MaterialConfig {
     },
     pipe: {
       spec: pipe,
-      verticalPitch: {
-        type: "uniform",
-        pitch: num("pipe-pitch", errors, "鋼管鉛直ピッチ"),
-        mode: "fixed_pitch",
-        startOffset: num("pipe-bottom", errors, "鋼管最下段高さ"),
-        endOffset: num("pipe-top", errors, "鋼管最上段離れ"),
-      },
+      verticalPitch:
+        val("pipe-vmode") === "two_stage"
+          ? {
+              type: "two_stage",
+              boundaryLevel: num("pipe-boundary", errors, "鋼管二段階境界高さ"),
+              lower: { pitch: num("pipe-pitch", errors, "鋼管下部ピッチ"), mode: "fixed_pitch" },
+              upper: {
+                pitch: num("pipe-upper-pitch", errors, "鋼管上部ピッチ"),
+                mode: "fixed_pitch",
+              },
+              placeAtBoundary: checked("pipe-place-boundary"),
+              bottomOffset: num("pipe-bottom", errors, "鋼管最下段高さ"),
+              topClearance: num("pipe-top", errors, "鋼管最上段離れ"),
+            }
+          : {
+              type: "uniform",
+              pitch: num("pipe-pitch", errors, "鋼管鉛直ピッチ"),
+              mode: "fixed_pitch",
+              startOffset: num("pipe-bottom", errors, "鋼管最下段高さ"),
+              endOffset: num("pipe-top", errors, "鋼管最上段離れ"),
+            },
     },
     separator: {
       spec: separator,
       pcon,
       manualLength,
-      bands: [
-        {
-          fromLevel: 0, toLevel: 100000,
-          horizontalPitch: {
-            type: "uniform",
-            pitch: num("sep-hpitch", errors, "セパ水平ピッチ"),
-            mode: "fixed_pitch",
-            startOffset: num("sep-hstart", errors, "セパ左端距離"),
-            endOffset: num("sep-hend", errors, "セパ右端距離"),
-          },
-          verticalPitch: num("sep-vpitch", errors, "セパ鉛直ピッチ"),
-        },
-      ],
+      bands: buildSeparatorBands(errors),
       edgeOffsets: {
         bottom: num("sep-bottom", errors, "セパ最下段高さ"),
         topClearance: num("sep-top", errors, "セパ最上段離れ"),
@@ -352,6 +396,7 @@ function numField(
   input.type = "number";
   input.step = "any";
   input.value = String(m[key] ?? "");
+  input.onfocus = () => pushHistory();
   input.oninput = () => { m[key] = Number(input.value); planApi?.redraw(); renderJunctions(); };
   el.append(label, input);
   return el;
@@ -362,7 +407,7 @@ function boolField(m: Record<string, unknown>, key: string, label: string): HTML
   const input = document.createElement("input");
   input.type = "checkbox";
   input.checked = Boolean(m[key]);
-  input.onchange = () => { m[key] = input.checked; };
+  input.onchange = () => { pushHistory(); m[key] = input.checked; };
   el.append(input, label);
   return el;
 }
@@ -379,7 +424,7 @@ function selectField(
   }
   if (m[key] == null) m[key] = options[0]![0]; // 既定値 = 先頭の選択肢
   sel.value = String(m[key]);
-  sel.onchange = () => { m[key] = sel.value; };
+  sel.onchange = () => { pushHistory(); m[key] = sel.value; };
   el.append(label, sel);
   return el;
 }
@@ -390,9 +435,11 @@ function zField(m: MemberInput, idx: number): HTMLElement {
   input.type = "number";
   input.step = "any";
   input.value = String(m.placement?.z ?? 0);
+  input.onfocus = () => pushHistory();
   input.oninput = () => {
     if (!m.placement) m.placement = { x: 0, y: 5000 + idx * 3000, angleDeg: 0 };
     m.placement.z = Number(input.value);
+    renderJunctions();
   };
   el.append("表示底高さZ (mm, 3D用)", input);
   return el;
@@ -408,7 +455,7 @@ function flagField(
   const arr = (m[key] as boolean[] | undefined) ?? [true, true, true, true];
   m[key] = arr;
   input.checked = arr[index]!;
-  input.onchange = () => { arr[index] = input.checked; };
+  input.onchange = () => { pushHistory(); arr[index] = input.checked; };
   el.append(input, label);
   return el;
 }
@@ -416,6 +463,64 @@ function flagField(
 let planApi: PlanApi | null = null;
 let selectedMemberIndex: number | null = null;
 let junctionPolicies: Record<string, JunctionPolicy> = {};
+
+// ---------- Undo / Redo(部材形状・配置・勝ち負けの編集履歴) ----------
+
+const HISTORY_LIMIT = 100;
+let undoStack: string[] = [];
+let redoStack: string[] = [];
+
+function historySnapshot(): string {
+  return JSON.stringify({ members, junctionPolicies });
+}
+
+/**
+ * 変更を加える直前に呼ぶ。preSnap を渡すと「変更前の状態」を明示的に積む
+ * (ドラッグ確定時など、すでに状態が変わってしまっている場合に使う)
+ */
+function pushHistory(preSnap?: string): void {
+  if (preSnap !== undefined && preSnap === historySnapshot()) return; // 実変更なし
+  const snap = preSnap ?? historySnapshot();
+  if (undoStack[undoStack.length - 1] === snap) return; // 無変更の重複を避ける
+  undoStack.push(snap);
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateHistoryButtons();
+}
+
+function restoreSnapshot(snap: string): void {
+  const s = JSON.parse(snap) as {
+    members: MemberInput[];
+    junctionPolicies: Record<string, JunctionPolicy>;
+  };
+  members = s.members;
+  junctionPolicies = s.junctionPolicies;
+  selectedMemberIndex = null;
+  renderMembers();
+}
+
+function undo(): void {
+  const snap = undoStack.pop();
+  if (snap === undefined) return;
+  redoStack.push(historySnapshot());
+  restoreSnapshot(snap);
+  updateHistoryButtons();
+}
+
+function redo(): void {
+  const snap = redoStack.pop();
+  if (snap === undefined) return;
+  undoStack.push(historySnapshot());
+  restoreSnapshot(snap);
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons(): void {
+  const u = document.getElementById("btn-undo") as HTMLButtonElement | null;
+  const r = document.getElementById("btn-redo") as HTMLButtonElement | null;
+  if (u) u.disabled = undoStack.length === 0;
+  if (r) r.disabled = redoStack.length === 0;
+}
 
 function renderJunctions(): void {
   const root = document.getElementById("junctions-list");
@@ -433,7 +538,7 @@ function renderJunctions(): void {
     label.textContent = c.description;
     const sel = document.createElement("select");
     for (const [v, t] of [
-      ["deduct", "柱勝ち: 控除する(標準)"],
+      ["deduct", `${c.winnerId} 勝ち: ${c.loserId} から控除(標準)`],
       ["count_both", "両方計上: 控除しない"],
     ] as const) {
       const o = document.createElement("option");
@@ -471,7 +576,7 @@ function renderMembers(): void {
     const del = document.createElement("button");
     del.textContent = "削除";
     del.className = "danger";
-    del.onclick = () => { members.splice(idx, 1); renderMembers(); };
+    del.onclick = () => { pushHistory(); members.splice(idx, 1); renderMembers(); };
     head.append(title, del);
     card.appendChild(head);
 
@@ -755,8 +860,21 @@ renderMembers();
 document.getElementById("btn-add-member")!.addEventListener("click", () => {
   const kind = (document.getElementById("member-kind") as HTMLSelectElement)
     .value as MemberInput["kind"];
+  pushHistory();
   members.push(newMember(kind));
   renderMembers();
+});
+
+document.getElementById("btn-undo")!.addEventListener("click", undo);
+document.getElementById("btn-redo")!.addEventListener("click", redo);
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return; // 入力中は既定動作
+  if (e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+  if (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey)) {
+    e.preventDefault(); redo();
+  }
 });
 
 // ---------- 実行・CSV出力 ----------
@@ -769,7 +887,7 @@ let lastRun: {
 
 const EXPORT_BUTTONS = [
   "btn-csv-materials", "btn-csv-members", "btn-csv-stripping",
-  "btn-csv-faces", "btn-csv-conditions",
+  "btn-csv-faces", "btn-csv-conditions", "btn-report",
 ];
 
 function setExportEnabled(enabled: boolean): void {
@@ -831,6 +949,18 @@ wireExport("btn-csv-members", "部材別", () => memberRowsCsv(lastRun!.aggregat
 wireExport("btn-csv-stripping", "脱型区分別", () => strippingCsv(lastRun!.aggregate));
 wireExport("btn-csv-faces", "型枠面別内訳", () => faceDetailCsv(lastRun!.memberResults));
 wireExport("btn-csv-conditions", "計算条件一覧", () => conditionsCsv(lastRun!.project));
+
+document.getElementById("btn-report")!.addEventListener("click", () => {
+  if (!lastRun) return;
+  const html = buildReportHtml(lastRun.project, lastRun.memberResults, lastRun.aggregate);
+  const win = window.open("", "_blank");
+  if (!win) {
+    alert("ポップアップがブロックされました。ブラウザの設定で許可してください");
+    return;
+  }
+  win.document.write(html);
+  win.document.close();
+});
 
 // ---------- 3D確認 ----------
 
@@ -924,11 +1054,14 @@ document.getElementById("btn-underlay-clear")!.addEventListener("click", () => {
 
 // ---------- 2D平面配置 ----------
 
+let pendingDragSnapshot: string | null = null;
+
 planApi = initPlan({
   canvas: document.getElementById("plan-canvas") as HTMLCanvasElement,
   modeSelect: document.getElementById("plan-mode") as HTMLSelectElement,
   getMembers: () => members,
   addMember: (m) => {
+    pushHistory();
     members.push(m);
     renderMembers();
   },
@@ -941,6 +1074,14 @@ planApi = initPlan({
         behavior: "smooth", block: "nearest",
       });
     }
+  },
+  onDragStart: () => {
+    pendingDragSnapshot = historySnapshot();
+  },
+  onDragEnd: () => {
+    if (pendingDragSnapshot !== null) pushHistory(pendingDragSnapshot);
+    pendingDragSnapshot = null;
+    renderMembers(); // 寸法カード・取り合いを最新化
   },
   getUnderlay: () => underlay,
   onScalePoints: (p1, p2) => {

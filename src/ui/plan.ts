@@ -28,6 +28,9 @@ export interface PlanOptions {
   getUnderlay?(): UnderlayView | null;
   /** 縮尺計測の2点が確定したとき(world mm) */
   onScalePoints?(p1: Point, p2: Point): void;
+  /** ドラッグ編集(移動・端点・コーナー)の開始/終了。履歴と再検出用 */
+  onDragStart?(): void;
+  onDragEnd?(): void;
 }
 
 type Mode = "select" | MemberInput["kind"];
@@ -60,7 +63,12 @@ export function initPlan(opts: PlanOptions): PlanApi {
   let scaleMode = false; // 縮尺計測モード
   let scalePoint: Point | null = null; // 計測1点目(スナップなしの生座標)
   let selected: number | null = null;
-  let dragging: { index: number; offsetX: number; offsetY: number } | null = null;
+  let dragging: {
+    index: number;
+    mode: "move" | "start" | "end" | "corner";
+    offsetX: number;
+    offsetY: number;
+  } | null = null;
   let panning: { startX: number; startY: number; panX0: number; panY0: number } | null = null;
 
   function mode(): Mode {
@@ -154,6 +162,40 @@ export function initPlan(opts: PlanOptions): PlanApi {
     return null;
   }
 
+  /** 選択中部材の編集ハンドル(world 座標)。壁・梁 = 端点、矩形 = 対角コーナー */
+  function handlePoints(
+    m: MemberInput, index: number,
+  ): { mode: "start" | "end" | "corner"; p: Point }[] {
+    const pl = placementOf(m, index);
+    const f = footprint(m);
+    const rad = (pl.angleDeg * Math.PI) / 180;
+    const ux = Math.cos(rad);
+    const uy = Math.sin(rad);
+    if (f.axisBased) {
+      return [
+        { mode: "start", p: { x: pl.x, y: pl.y } },
+        { mode: "end", p: { x: pl.x + ux * f.len, y: pl.y + uy * f.len } },
+      ];
+    }
+    const vx = -uy;
+    const vy = ux;
+    return [{
+      mode: "corner",
+      p: { x: pl.x + ux * f.len + vx * f.wid, y: pl.y + uy * f.len + vy * f.wid },
+    }];
+  }
+
+  function hitHandle(p: Point): { mode: "start" | "end" | "corner" } | null {
+    if (selected === null) return null;
+    const m = opts.getMembers()[selected];
+    if (!m) return null;
+    const tolWorld = 8 / scale; // 8px
+    for (const h of handlePoints(m, selected)) {
+      if (Math.hypot(p.x - h.p.x, p.y - h.p.y) <= tolWorld) return { mode: h.mode };
+    }
+    return null;
+  }
+
   // ---------- 描画 ----------
 
   function drawGrid(): void {
@@ -217,6 +259,16 @@ export function initPlan(opts: PlanOptions): PlanApi {
     ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(m.memberId + (pl.auto ? "(未配置)" : ""), sx(cx), sy(cy));
+    // 選択中は編集ハンドルを表示(壁・梁 = 端点、矩形 = 対角コーナー)
+    if (index === selected) {
+      for (const h of handlePoints(m, index)) {
+        ctx.fillStyle = "#fff";
+        ctx.strokeStyle = "#e01b24";
+        ctx.lineWidth = 2;
+        ctx.fillRect(sx(h.p.x) - 5, sy(h.p.y) - 5, 10, 10);
+        ctx.strokeRect(sx(h.p.x) - 5, sy(h.p.y) - 5, 10, 10);
+      }
+    }
   }
 
   function drawPreview(): void {
@@ -368,6 +420,13 @@ export function initPlan(opts: PlanOptions): PlanApi {
       return;
     }
     if (mode() === "select") {
+      // 先に選択中部材のハンドルを判定(端点・コーナー編集)
+      const handle = hitHandle(p);
+      if (handle && selected !== null) {
+        dragging = { index: selected, mode: handle.mode, offsetX: 0, offsetY: 0 };
+        opts.onDragStart?.();
+        return;
+      }
       const hit = hitTest(p);
       selected = hit;
       opts.onSelect(hit);
@@ -375,7 +434,8 @@ export function initPlan(opts: PlanOptions): PlanApi {
         const members = opts.getMembers();
         const m = members[hit]!;
         const pl = placementOf(m, hit);
-        dragging = { index: hit, offsetX: p.x - pl.x, offsetY: p.y - pl.y };
+        dragging = { index: hit, mode: "move", offsetX: p.x - pl.x, offsetY: p.y - pl.y };
+        opts.onDragStart?.();
       } else {
         panning = { startX: e.clientX, startY: e.clientY, panX0: panX, panY0: panY };
       }
@@ -402,10 +462,57 @@ export function initPlan(opts: PlanOptions): PlanApi {
     if (dragging) {
       const members = opts.getMembers();
       const m = members[dragging.index]!;
-      const nx = Math.round((cursor.x - dragging.offsetX) / SNAP) * SNAP;
-      const ny = Math.round((cursor.y - dragging.offsetY) / SNAP) * SNAP;
       const prev = m.placement ?? placementOf(m, dragging.index);
-      m.placement = { x: nx, y: ny, angleDeg: prev.angleDeg };
+      const snapped = snap(cursor);
+      if (dragging.mode === "move") {
+        const nx = Math.round((cursor.x - dragging.offsetX) / SNAP) * SNAP;
+        const ny = Math.round((cursor.y - dragging.offsetY) / SNAP) * SNAP;
+        m.placement = { ...prev, x: nx, y: ny };
+      } else if (dragging.mode === "start" && (m.kind === "wall" || m.kind === "beam")) {
+        // 始点を動かす: 終点は固定
+        const rad = (prev.angleDeg * Math.PI) / 180;
+        const end = {
+          x: prev.x + Math.cos(rad) * m.length,
+          y: prev.y + Math.sin(rad) * m.length,
+        };
+        const len = Math.round(Math.hypot(end.x - snapped.x, end.y - snapped.y) / SNAP) * SNAP;
+        if (len >= 100) {
+          m.length = len;
+          m.placement = {
+            ...prev,
+            x: snapped.x,
+            y: snapped.y,
+            angleDeg:
+              Math.round((Math.atan2(end.y - snapped.y, end.x - snapped.x) * 1800) / Math.PI) / 10,
+          };
+        }
+      } else if (dragging.mode === "end" && (m.kind === "wall" || m.kind === "beam")) {
+        const len = Math.round(Math.hypot(snapped.x - prev.x, snapped.y - prev.y) / SNAP) * SNAP;
+        if (len >= 100) {
+          m.length = len;
+          m.placement = {
+            ...prev,
+            angleDeg:
+              Math.round((Math.atan2(snapped.y - prev.y, snapped.x - prev.x) * 1800) / Math.PI) / 10,
+          };
+        }
+      } else if (dragging.mode === "corner") {
+        // 対角コーナーで矩形をリサイズ(原点固定、ローカル座標で判定)
+        const rad = (-prev.angleDeg * Math.PI) / 180;
+        const tx = cursor.x - prev.x;
+        const ty = cursor.y - prev.y;
+        const lw = Math.round((tx * Math.cos(rad) - ty * Math.sin(rad)) / SNAP) * SNAP;
+        const ld = Math.round((tx * Math.sin(rad) + ty * Math.cos(rad)) / SNAP) * SNAP;
+        if (lw >= 100 && ld >= 100) {
+          if (m.kind === "column" || m.kind === "footing") {
+            m.width = lw;
+            m.depth = ld;
+          } else if (m.kind === "slab") {
+            m.lengthX = lw;
+            m.lengthY = ld;
+          }
+        }
+      }
       redraw();
       return;
     }
@@ -413,6 +520,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
   });
 
   window.addEventListener("mouseup", () => {
+    if (dragging) opts.onDragEnd?.();
     dragging = null;
     panning = null;
   });

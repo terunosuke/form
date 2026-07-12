@@ -47,6 +47,8 @@
           <option value="footing">フーチング</option>
         </select>
         <button id="btn-add-member" type="button">部材を追加</button>
+        <button id="btn-undo" type="button" disabled>元に戻す (Ctrl+Z)</button>
+        <button id="btn-redo" type="button" disabled>やり直す (Ctrl+Y)</button>
       </div>
       <div id="members-list"></div>
     </section>
@@ -84,8 +86,9 @@
 
     <section id="junction-section">
       <h2>5. 取り合い・重複控除(勝ち負け)</h2>
-      <p class="hint">平面配置から柱×壁・柱×梁の重なりを自動検出します(標準は柱勝ち=壁・梁側から控除)。
-        壁×壁・梁×スラブなどの自動検出は将来対応です。控除箇所は板割図に斜線で表示されます。</p>
+      <p class="hint">平面配置から柱×壁・柱×梁(柱勝ち)、壁×壁(先に登録した壁が通し)、
+        梁×スラブ底(梁勝ち)の重なりを自動検出します。候補ごとに控除する/しないを選択できます。
+        控除箇所は板割図に斜線で表示されます。壁×梁の重ね(同一位置の併存)は控除しません。</p>
       <div id="junctions-list"></div>
     </section>
 
@@ -114,6 +117,7 @@
         <button id="btn-csv-stripping" type="button" disabled>脱型区分別</button>
         <button id="btn-csv-faces" type="button" disabled>型枠面別内訳</button>
         <button id="btn-csv-conditions" type="button" disabled>計算条件一覧</button>
+        <button id="btn-report" type="button" disabled>印刷用帳票(PDF保存)</button>
       </div>
       <div id="results"></div>
     </section>

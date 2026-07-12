@@ -23,6 +23,8 @@ describe("柱×壁の検出 (E-21)", () => {
     const c = cands[0]!;
     expect(c.kind).toBe("column_wall");
     expect(c.id).toBe("C1~W1");
+    expect(c.winnerId).toBe("C1");
+    expect(c.loserId).toBe("W1");
     expect(c.uRange).toEqual([1000, 1800]); // 壁始点(-1000)から柱 x=0..800
     expect(c.vRange).toEqual([0, 3000]);
     expect(c.defaultPolicy).toBe("deduct");
@@ -32,9 +34,8 @@ describe("柱×壁の検出 (E-21)", () => {
     const wallButt: MemberInput = {
       kind: "wall", memberId: "W2", length: 3000, height: 3000, thickness: 180,
       formworkSides: "both",
-      placement: { x: 800 - 100, y: 400, angleDeg: 0 }, // 100mm だけ柱に入る…ではなく始点側
+      placement: { x: 800 - 100, y: 400, angleDeg: 0 }, // 始点が柱内(x=700)
     };
-    // 始点が柱内(x=700)→ 重なりは 0〜100mm
     const cands = detectJunctions([column, wallButt]);
     expect(cands).toHaveLength(1);
     expect(cands[0]!.uRange).toEqual([0, 100]);
@@ -63,7 +64,7 @@ describe("柱×壁の検出 (E-21)", () => {
     };
     const cands = detectJunctions([rotCol, wall]);
     expect(cands).toHaveLength(1);
-    expect(cands[0]!.uRange[1]).toBeGreaterThan(cands[0]!.uRange[0]);
+    expect(cands[0]!.uRange![1]).toBeGreaterThan(cands[0]!.uRange![0]);
   });
 
   it("高さが重ならなければ検出しない", () => {
@@ -90,6 +91,89 @@ describe("柱×梁の検出と高さ範囲", () => {
   });
 });
 
+describe("壁×壁の検出 (E-26 相当)", () => {
+  it("T字取り合い: 後に登録した壁が負け、通し壁の厚さ分を控除", () => {
+    const through: MemberInput = {
+      kind: "wall", memberId: "WA", length: 6000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 0, y: 0, angleDeg: 0 },
+    };
+    // WB は WA に直交して突き付け(WB 軸は y=-2000 から y=+50 まで)
+    const butting: MemberInput = {
+      kind: "wall", memberId: "WB", length: 2050, height: 3000, thickness: 180,
+      formworkSides: "both", placement: { x: 3000, y: -2000, angleDeg: 90 },
+    };
+    const cands = detectJunctions([through, butting]);
+    expect(cands).toHaveLength(1);
+    const c = cands[0]!;
+    expect(c.kind).toBe("wall_wall");
+    expect(c.winnerId).toBe("WA"); // 先に登録した壁が通し
+    expect(c.loserId).toBe("WB");
+    // WA のフットプリントは y=-100〜+100 → WB 軸(始点 y=-2000)の 1900〜2050mm
+    expect(c.uRange).toEqual([1900, 2050]);
+  });
+
+  it("十字交差でも候補は1件(先勝ち)で、負け側だけ控除される", () => {
+    const a: MemberInput = {
+      kind: "wall", memberId: "WA", length: 6000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 0, y: 0, angleDeg: 0 },
+    };
+    const b: MemberInput = {
+      kind: "wall", memberId: "WB", length: 4000, height: 3000, thickness: 180,
+      formworkSides: "both", placement: { x: 3000, y: -2000, angleDeg: 90 },
+    };
+    const cands = detectJunctions([a, b]);
+    expect(cands).toHaveLength(1);
+    const applied = applyJunctions([a, b], cands, {});
+    const wa = applied.find((m) => m.memberId === "WA")!;
+    const wb = applied.find((m) => m.memberId === "WB")!;
+    if (wa.kind !== "wall" || wb.kind !== "wall") throw new Error("型が不正");
+    expect(wa.deductionsA ?? []).toEqual([]);
+    expect(wb.deductionsA).toHaveLength(1);
+    expect(wb.deductionsA![0]!.w).toBe(200); // 通し壁の厚さ分
+  });
+});
+
+describe("梁×スラブの検出", () => {
+  const slab: MemberInput = {
+    kind: "slab", memberId: "S1", lengthX: 6000, lengthY: 4000, thickness: 200,
+    bottomForm: true, placement: { x: 0, y: 0, angleDeg: 0, z: 3000 },
+  };
+  it("スラブ底(z=3000)を支える梁(z=2300, せい700)→ スラブ底に領域控除", () => {
+    const beam: MemberInput = {
+      kind: "beam", memberId: "G3", length: 8000, width: 600, depth: 700,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: -1000, y: 2000, angleDeg: 0, z: 2300 },
+    };
+    const cands = detectJunctions([slab, beam]);
+    expect(cands).toHaveLength(1);
+    const c = cands[0]!;
+    expect(c.kind).toBe("beam_slab");
+    expect(c.winnerId).toBe("G3");
+    expect(c.loserId).toBe("S1");
+    expect(c.region).toEqual({ u: 0, v: 1700, w: 6000, h: 600 }); // 梁幅600の帯
+
+    const applied = applyJunctions([slab, beam], cands, {});
+    const s = applied.find((m) => m.memberId === "S1")!;
+    if (s.kind !== "slab") throw new Error("型が不正");
+    expect(s.deductionsBottom).toHaveLength(1);
+  });
+  it("高さが離れている梁は対象外 / 底型枠なしスラブは対象外", () => {
+    const lowBeam: MemberInput = {
+      kind: "beam", memberId: "G4", length: 8000, width: 600, depth: 700,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: -1000, y: 2000, angleDeg: 0, z: 0 }, // 梁天端700 << スラブ底3000
+    };
+    expect(detectJunctions([slab, lowBeam])).toHaveLength(0);
+    const noBottom: MemberInput = { ...slab, memberId: "S2", bottomForm: false } as MemberInput;
+    const beam: MemberInput = {
+      kind: "beam", memberId: "G5", length: 8000, width: 600, depth: 700,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: -1000, y: 2000, angleDeg: 0, z: 2300 },
+    };
+    expect(detectJunctions([noBottom, beam])).toHaveLength(0);
+  });
+});
+
 describe("控除の適用と勝ち負け変更 (E-22/23)", () => {
   const cands = detectJunctions([column, wallThrough]);
 
@@ -99,7 +183,6 @@ describe("控除の適用と勝ち負け変更 (E-22/23)", () => {
     if (w.kind !== "wall") throw new Error("型が不正");
     expect(w.deductionsA).toEqual([{ u: 1000, v: 0, w: 800, h: 3000 }]);
     expect(w.deductionsB).toEqual([{ u: 1000, v: 0, w: 800, h: 3000 }]);
-    // 元の members は変更されない
     expect(wallThrough.deductionsA).toBeUndefined();
   });
 
