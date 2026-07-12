@@ -68,6 +68,20 @@
       <canvas id="plan-canvas" width="1040" height="520"></canvas>
     </section>
 
+    <section id="three-section">
+      <h2>5. 3D確認(材料別表示)</h2>
+      <div class="row">
+        <label class="inline"><input type="checkbox" id="layer-concrete" checked />躯体</label>
+        <label class="inline"><input type="checkbox" id="layer-plywood" checked />ベニヤ</label>
+        <label class="inline"><input type="checkbox" id="layer-batten" checked />桟木</label>
+        <label class="inline"><input type="checkbox" id="layer-pipe" checked />鋼管</label>
+        <label class="inline"><input type="checkbox" id="layer-separator" checked />セパレーター</label>
+        <span class="hint">「拾い出しを実行」後に表示されます。ドラッグで回転 / ホイールで拡大縮小 / 右ドラッグで移動。
+          フォームタイ・Pコンの3D表示と梁・スラブの配置高さは将来対応です(現状は下端0で表示)。</span>
+      </div>
+      <div id="three-container"></div>
+    </section>
+
     <section id="run-section">
       <div class="row">
         <button id="btn-run" type="button" class="primary">拾い出しを実行</button>

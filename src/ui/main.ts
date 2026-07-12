@@ -6,6 +6,7 @@ import {
   conditionsCsv, faceDetailCsv, materialTotalsCsv, memberRowsCsv, strippingCsv,
 } from "../core/export.js";
 import { initPlan, type PlanApi } from "./plan.js";
+import { initThreeView, type LayerName, type ThreeViewApi } from "./three-view.js";
 import type {
   BattenSpec, FormTieSpec, PconSpec, PipeSpec, PlywoodSpec, SeparatorSpec,
 } from "../core/masters.js";
@@ -720,6 +721,7 @@ document.getElementById("btn-run")!.addEventListener("click", () => {
   lastRun = { project, memberResults, aggregate };
   setExportEnabled(true);
   renderResults(memberResults, aggregate);
+  updateThreeView(project, memberResults);
 });
 
 function wireExport(id: string, filename: string, gen: () => string): void {
@@ -733,6 +735,25 @@ wireExport("btn-csv-members", "部材別", () => memberRowsCsv(lastRun!.aggregat
 wireExport("btn-csv-stripping", "脱型区分別", () => strippingCsv(lastRun!.aggregate));
 wireExport("btn-csv-faces", "型枠面別内訳", () => faceDetailCsv(lastRun!.memberResults));
 wireExport("btn-csv-conditions", "計算条件一覧", () => conditionsCsv(lastRun!.project));
+
+// ---------- 3D確認 ----------
+
+let threeApi: ThreeViewApi | null = null;
+
+function updateThreeView(project: Project, memberResults: MemberTakeoffResult[]): void {
+  if (!threeApi) {
+    threeApi = initThreeView(document.getElementById("three-container")!);
+    const layerIds: [string, LayerName][] = [
+      ["layer-concrete", "concrete"], ["layer-plywood", "plywood"],
+      ["layer-batten", "batten"], ["layer-pipe", "pipe"], ["layer-separator", "separator"],
+    ];
+    for (const [id, layer] of layerIds) {
+      const cb = document.getElementById(id) as HTMLInputElement;
+      cb.addEventListener("change", () => threeApi!.setLayerVisible(layer, cb.checked));
+    }
+  }
+  threeApi.update(project, { memberResults, aggregate: aggregateProject(memberResults) });
+}
 
 // ---------- 2D平面配置 ----------
 

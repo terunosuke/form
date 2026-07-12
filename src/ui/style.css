@@ -50,3 +50,6 @@ details summary { cursor: pointer; color: var(--accent); }
 #plan-canvas { width: 100%; border: 1px solid var(--border); border-radius: 4px;
   background: #fbfcfd; cursor: crosshair; display: block; }
 .member-card.selected { outline: 2px solid #e01b24; }
+#three-container { width: 100%; height: 480px; border: 1px solid var(--border);
+  border-radius: 4px; overflow: hidden; }
+#three-container canvas { display: block; }
