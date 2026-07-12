@@ -15,3 +15,4 @@ export * from "./core/separator.js";
 export * from "./core/hardware.js";
 export * from "./core/takeoff.js";
 export * from "./core/aggregate.js";
+export * from "./core/project.js";
