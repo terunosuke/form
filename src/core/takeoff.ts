@@ -87,6 +87,8 @@ export interface FaceTakeoff {
   strippingGroup: StrippingGroup;
   /** 支保工と関連する材料か(スラブ底・梁底) */
   supportRelated: boolean;
+  /** 部材基準面からのU方向オフセット(梁底を壁で分割した場合の区間開始位置) */
+  originUOffset?: number;
   width: number;
   height: number;
   area: number;
@@ -428,6 +430,32 @@ export interface BeamTakeoffInput {
   bottomDeductionsU?: [number, number][];
 }
 
+/**
+ * 全長 [0, total] から控除範囲を除いた残り区間を返す。
+ * 50mm 未満の残り区間は施工上意味がないため生成しない。
+ */
+export function subtractURanges(
+  total: number,
+  holes: [number, number][],
+): [number, number][] {
+  const MIN_SEGMENT = 50;
+  const sorted = holes
+    .map(([a, b]): [number, number] => [
+      Math.max(0, Math.min(a, b)),
+      Math.min(total, Math.max(a, b)),
+    ])
+    .filter(([a, b]) => b - a > EPS)
+    .sort((x, y) => x[0] - y[0]);
+  const out: [number, number][] = [];
+  let cur = 0;
+  for (const [a, b] of sorted) {
+    if (a - cur >= MIN_SEGMENT) out.push([cur, a]);
+    cur = Math.max(cur, b);
+  }
+  if (total - cur >= MIN_SEGMENT) out.push([cur, total]);
+  return out;
+}
+
 export function takeoffBeam(input: BeamTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
   const faces: FaceTakeoff[] = [];
   const blockers: MissingInput[] = [];
@@ -471,23 +499,40 @@ export function takeoffBeam(input: BeamTakeoffInput, config: MaterialConfig): Me
       battenDepth: config.batten.spec.sectionDepth,
     };
     const bw = beamBottomWidth(input.width, rule, buildUp);
-    // 壁の上に梁が乗る等の控除(梁長さ方向の範囲 → 梁底全幅を控除)
-    const rangeDeductions: Rect[] = (input.bottomDeductionsU ?? []).map(([u0, u1]) => ({
-      u: u0, v: 0, w: Math.max(0, u1 - u0), h: bw.width,
-    }));
-    const face = takeoffFace({
-      faceId: `${input.memberId}-B`,
-      memberId: input.memberId,
-      faceType: "beam_bottom",
-      strippingGroup: "beam_bottom",
-      supportRelated: true,
-      width: input.length, // U = 梁長さ方向
-      height: bw.width, // V = 梁幅方向(水平面)
-      deductions: [...(input.deductionsBottom ?? []), ...rangeDeductions],
-      config,
+    // 壁の上に梁が乗る範囲(bottomDeductionsU)では梁底を「なくす」。
+    // 控除領域として穴を開けるのではなく面を分割し、残る区間ごとに
+    // ベニヤ・桟木・鋼管を割り付ける(桟木・鋼管も壁区間には配置されない)。
+    const segments = subtractURanges(input.length, input.bottomDeductionsU ?? []);
+    segments.forEach(([segStart, segEnd], i) => {
+      const segLen = segEnd - segStart;
+      // 面全体の控除領域を区間ローカル座標へシフト・クリップ
+      const localDeds: Rect[] = (input.deductionsBottom ?? [])
+        .map((d) => {
+          const u0 = Math.max(d.u, segStart);
+          const u1 = Math.min(d.u + d.w, segEnd);
+          return { u: u0 - segStart, v: d.v, w: u1 - u0, h: d.h };
+        })
+        .filter((d) => d.w > EPS && d.h > EPS);
+      const face = takeoffFace({
+        faceId: segments.length === 1 ? `${input.memberId}-B` : `${input.memberId}-B${i + 1}`,
+        memberId: input.memberId,
+        faceType: "beam_bottom",
+        strippingGroup: "beam_bottom",
+        supportRelated: true,
+        width: segLen, // U = 梁長さ方向(区間)
+        height: bw.width, // V = 梁幅方向(水平面)
+        deductions: localDeds,
+        config,
+      });
+      face.originUOffset = segStart;
+      face.notes.push(bw.formula);
+      if (segments.length > 1 || segStart > EPS || segEnd < input.length - EPS) {
+        face.notes.push(
+          `梁底は壁との重なりを除いた区間 ${segStart}〜${segEnd}mm(壁部分には梁底を設けない)`,
+        );
+      }
+      faces.push(face);
     });
-    face.notes.push(bw.formula);
-    faces.push(face);
   }
   const ends = input.endForms ?? { start: false, end: false };
   for (const [key, flag] of [["start", ends.start], ["end", ends.end]] as const) {

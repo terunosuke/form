@@ -53,6 +53,70 @@ export function initPlan(opts: PlanOptions): PlanApi {
   const { canvas } = opts;
   const ctx = canvas.getContext("2d")!;
 
+  // ---- 寸法入力吹き出し(作図中に ΔX / ΔY を数値指定できる) ----
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "relative";
+  canvas.parentElement!.insertBefore(wrapper, canvas);
+  wrapper.appendChild(canvas);
+  const bubble = document.createElement("div");
+  bubble.className = "dim-bubble";
+  bubble.style.display = "none";
+  const dimX = document.createElement("input");
+  dimX.type = "number";
+  dimX.step = "any";
+  const dimY = document.createElement("input");
+  dimY.type = "number";
+  dimY.step = "any";
+  const lblX = document.createElement("span");
+  lblX.textContent = "X";
+  const lblY = document.createElement("span");
+  lblY.textContent = "Y";
+  const lblHint = document.createElement("span");
+  lblHint.className = "dim-hint";
+  lblHint.textContent = "mm / Enterで確定";
+  bubble.append(lblX, dimX, lblY, dimY, lblHint);
+  wrapper.appendChild(bubble);
+
+  function showBubble(atPoint: Point): void {
+    bubble.style.display = "flex";
+    // キャンバスの描画px → CSSpx 変換(CSS幅100%でビットマップと差があるため)
+    const kx = canvas.clientWidth / canvas.width;
+    const ky = canvas.clientHeight / canvas.height;
+    const bx = Math.min(Math.max(sx(atPoint.x) * kx + 14, 4), canvas.clientWidth - 250);
+    const by = Math.min(Math.max(sy(atPoint.y) * ky - 44, 4), canvas.clientHeight - 40);
+    bubble.style.left = `${bx}px`;
+    bubble.style.top = `${by}px`;
+    dimX.value = "";
+    dimY.value = "";
+    dimX.placeholder = "0";
+    dimY.placeholder = "0";
+    dimX.focus();
+  }
+  function hideBubble(): void {
+    bubble.style.display = "none";
+  }
+  function confirmBubble(): void {
+    if (!firstPoint) return;
+    const dx = dimX.value.trim() === "" ? 0 : Number(dimX.value);
+    const dy = dimY.value.trim() === "" ? 0 : Number(dimY.value);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return; // 未入力
+    finishDraw({ x: firstPoint.x + dx, y: firstPoint.y + dy });
+    hideBubble();
+    redraw();
+  }
+  for (const input of [dimX, dimY]) {
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // 全体ショートカット(Undo等)と干渉させない
+      if (e.key === "Enter") confirmBubble();
+      if (e.key === "Escape") {
+        firstPoint = null;
+        hideBubble();
+        redraw();
+      }
+    });
+  }
+
   // ビュー状態: world(mm) → screen(px)
   let scale = 0.06;
   let panX = -500; // 画面左上の world 座標
@@ -461,8 +525,10 @@ export function initPlan(opts: PlanOptions): PlanApi {
     // 作図モード
     if (firstPoint === null) {
       firstPoint = snap(p);
+      showBubble(firstPoint);
     } else {
       finishDraw(p);
+      hideBubble();
     }
     redraw();
   });
@@ -533,6 +599,13 @@ export function initPlan(opts: PlanOptions): PlanApi {
       redraw();
       return;
     }
+    if (firstPoint) {
+      // 吹き出しの参考値(現在カーソル位置までのΔ)を更新
+      const ref = snap(mode() === "wall" || mode() === "beam"
+        ? applyOrtho(firstPoint, cursor) : cursor);
+      dimX.placeholder = String(Math.round(ref.x - firstPoint.x));
+      dimY.placeholder = String(Math.round(ref.y - firstPoint.y));
+    }
     if (firstPoint || (scaleMode && scalePoint)) redraw();
   });
 
@@ -567,6 +640,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
       firstPoint = null;
       scaleMode = false;
       scalePoint = null;
+      hideBubble();
       redraw();
     }
   });
@@ -579,6 +653,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
 
   opts.modeSelect.addEventListener("change", () => {
     firstPoint = null;
+    hideBubble();
     redraw();
   });
 

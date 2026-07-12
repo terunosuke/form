@@ -56,6 +56,11 @@ details summary { cursor: pointer; color: var(--accent); }
 details.itawari { margin: 4px 0 10px 14px; }
 .junction-row { border: 1px solid var(--border); border-radius: 4px;
   padding: 6px 10px; justify-content: space-between; }
+.dim-bubble { position: absolute; display: flex; align-items: center; gap: 4px;
+  background: #fff; border: 1.5px solid #e01b24; border-radius: 6px;
+  padding: 4px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); z-index: 5; }
+.dim-bubble input { width: 74px; padding: 2px 4px; font-size: 12px; }
+.dim-bubble .dim-hint { color: #888; font-size: 11px; }
 .svg-wrap { border: 1px solid var(--border); border-radius: 4px; margin: 6px 0;
   overflow-x: auto; background: #fff; }
 .svg-wrap svg { display: block; }

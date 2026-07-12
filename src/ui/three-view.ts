@@ -312,8 +312,12 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
 
       const frames = new Map<string, Frame>();
       for (const face of mr.faces) {
-        const frame = faceFrame(entry.m, entry.index, face.faceType);
-        if (!frame) continue;
+        const base = faceFrame(entry.m, entry.index, face.faceType);
+        if (!base) continue;
+        // 梁底の分割区間など、部材基準からのU方向オフセットを反映
+        const frame: Frame = face.originUOffset
+          ? { ...base, origin: base.origin.clone().addScaledVector(base.u, face.originUOffset) }
+          : base;
         frames.set(face.faceId, frame);
         addFaceMaterials(face, frame, plyT, battenDepth, battenWidth, pipeW, pipeH);
       }
@@ -339,20 +343,15 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
           rod.position.copy(at(-(pair.formGap / 2), pt));
           layers.separator.add(rod);
 
-          // フォームタイ(型枠表面の外側。大きめの座金+ナットで視認性を確保)
+          // フォームタイ(型枠表面の外側。シンプルな角プレート1枚で表現)
           for (const side of [outer, -(pair.formGap + outer)]) {
-            const plate = new THREE.Mesh(
-              new THREE.CylinderGeometry(60, 60, 24, 20), mats.formtie,
+            const plate = boxOnFrame(
+              frame,
+              pt.u, pt.v, side + (side > 0 ? 20 : -20),
+              140, 140, 40,
+              mats.formtie,
             );
-            plate.setRotationFromQuaternion(q);
-            plate.position.copy(at(side + (side > 0 ? 12 : -12), pt));
             layers.formtie.add(plate);
-            const nut = new THREE.Mesh(
-              new THREE.CylinderGeometry(34, 34, 90, 6), mats.formtie,
-            );
-            nut.setRotationFromQuaternion(q);
-            nut.position.copy(at(side + (side > 0 ? 68 : -68), pt));
-            layers.formtie.add(nut);
           }
 
           // Pコン(コンクリート面側。両面に円錐台)
