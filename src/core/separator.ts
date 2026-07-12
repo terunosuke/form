@@ -5,9 +5,10 @@ import { applyRounding } from "./rounding.js";
 import type { MissingInput, RoundedValue } from "./types.js";
 import { EPS, fix } from "./types.js";
 
-// セパレーター配置(設計書 §14)。
-// 長さは材料マスタ(lengthRules)または手入力からのみ決定する。
-// ルール未登録かつ手入力なしの場合は計算を停止し、不足情報を返す(推測禁止)。
+// セパレーター配置(設計書 §14、2026-07-12 改定)。
+// 長さの既定は「型枠同士の間隔」(対向する型枠面の間隔。壁なら壁厚)であり、
+// メーカー規格に依存しない。補助手段として手入力・材料マスタ規則を選択できる。
+// マスタ方式でルール未登録の場合のみ計算を停止し、不足情報を返す(推測禁止)。
 
 export interface SeparatorBand {
   fromLevel: number;
@@ -16,17 +17,22 @@ export interface SeparatorBand {
   verticalPitch: number; // この帯の鉛直ピッチ
 }
 
+export type SeparatorLengthMode = "form_gap" | "manual" | "master_rule";
+
 export interface SeparatorConfig {
   spec: SeparatorSpec;
   pcon: PconSpec;
-  finishCondition: string;
-  wallThickness: number;
+  finishCondition?: string;
+  /** 型枠同士の間隔(対向する型枠面の間隔。壁なら壁厚)。既定の長さ基準 */
+  formGap: number;
+  /** 長さの決定方法。既定 form_gap(長さ = 型枠間隔) */
+  lengthMode?: SeparatorLengthMode;
   formworkType: "single" | "double";
   /** 片面型枠でもセパを配置する場合 true(既定 false = 本数 0 + 警告) */
   placeOnSingleSided?: boolean;
   bands: SeparatorBand[];
   edgeOffsets: { bottom: number; topClearance: number };
-  /** マスタにルールがない場合の手入力長さ */
+  /** lengthMode = manual 時の手入力長さ(他モードでも指定があれば最優先) */
   manualLength?: number;
 }
 
@@ -40,7 +46,7 @@ export interface SeparatorLayoutResult {
   count: RoundedValue; // 配置本数
   /** 決定したセパ長さ。未確定(blockers あり)の場合 null */
   length: number | null;
-  lengthSource: "master_rule" | "manual" | null;
+  lengthSource: "form_gap" | "master_rule" | "manual" | null;
   lengthType: "standard" | "custom" | null; // 規格品か特注か
   lengthFormula: string;
   countByLength: Record<number, number>; // 長さ別本数
@@ -83,6 +89,8 @@ export function layoutSeparators(input: {
   }
 
   // ---- 長さの決定(推測禁止) ----
+  // 既定(form_gap):長さ = 型枠同士の間隔。メーカー規格に依存しない(2026-07-12 改定)。
+  const mode: SeparatorLengthMode = config.lengthMode ?? "form_gap";
   let length: number | null = null;
   let lengthSource: SeparatorLayoutResult["lengthSource"] = null;
   let lengthFormula = "";
@@ -90,31 +98,40 @@ export function layoutSeparators(input: {
     length = config.manualLength;
     lengthSource = "manual";
     lengthFormula = `手入力長さ ${length}`;
+  } else if (mode === "form_gap") {
+    if (config.formGap <= EPS) {
+      blockers.push({
+        code: "SEPARATOR_FORM_GAP_UNDEFINED",
+        message: `型枠同士の間隔が未入力です(指定値: ${config.formGap})。間隔または長さを入力してください`,
+      });
+      return emptyResult("型枠間隔未入力のため計算を停止");
+    }
+    length = fix(config.formGap);
+    lengthSource = "form_gap";
+    lengthFormula = `長さ = 型枠同士の間隔 ${config.formGap}`;
   } else {
     const rule = config.spec.lengthRules.find(
       (r) =>
         r.pconSpecId === config.pcon.id &&
         r.finishCondition === config.finishCondition &&
         (!r.validThicknessRange ||
-          (config.wallThickness >= r.validThicknessRange[0] - EPS &&
-            config.wallThickness <= r.validThicknessRange[1] + EPS)),
+          (config.formGap >= r.validThicknessRange[0] - EPS &&
+            config.formGap <= r.validThicknessRange[1] + EPS)),
     );
     if (!rule) {
       blockers.push({
         code: "SEPARATOR_LENGTH_UNDEFINED",
         message:
           `セパレーター長さの計算ルールが材料マスタに未登録です` +
-          `(セパ: ${config.spec.name}, Pコン: ${config.pcon.name}, 仕上げ: ${config.finishCondition}, ` +
-          `壁厚: ${config.wallThickness})。長さを直接入力してください`,
+          `(セパ: ${config.spec.name}, Pコン: ${config.pcon.name}, 仕上げ: ${config.finishCondition ?? "未指定"}, ` +
+          `型枠間隔: ${config.formGap})。長さを直接入力してください`,
       });
       return emptyResult("セパ長さ未確定のため計算を停止");
     }
-    length = fix(
-      config.wallThickness + rule.formula.addend + config.pcon.separatorLengthAdjust * 2,
-    );
+    length = fix(config.formGap + rule.formula.addend + config.pcon.separatorLengthAdjust * 2);
     lengthSource = "master_rule";
     lengthFormula =
-      `長さ = 壁厚 ${config.wallThickness} + 加算 ${rule.formula.addend} + ` +
+      `長さ = 型枠間隔 ${config.formGap} + 加算 ${rule.formula.addend} + ` +
       `Pコン調整 ${config.pcon.separatorLengthAdjust} × 2 = ${length}`;
   }
 

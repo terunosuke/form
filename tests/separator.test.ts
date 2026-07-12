@@ -43,7 +43,7 @@ function config(over: Partial<SeparatorConfig> = {}): SeparatorConfig {
     spec: sepSpec(),
     pcon: pconA,
     finishCondition: "打放し",
-    wallThickness: 180,
+    formGap: 180,
     formworkType: "double",
     bands: [
       {
@@ -61,28 +61,43 @@ function config(over: Partial<SeparatorConfig> = {}): SeparatorConfig {
 }
 
 describe("長さ計算 (D-16)", () => {
-  it("壁厚180 + 加算0 + Pコン調整10×2 = 200 → 規格品", () => {
+  it("既定: 長さ = 型枠同士の間隔 180 → 規格外なら特注丸め", () => {
     const r = layoutSeparators({ faceWidth: 3600, faceHeight: 3000, config: config() });
     expect(r.blockers).toEqual([]);
+    expect(r.length).toBe(180); // 180 は stockLengths になし → 特注だが 5 の倍数
+    expect(r.lengthSource).toBe("form_gap");
+    expect(r.lengthFormula).toContain("型枠同士の間隔 180");
+  });
+  it("型枠間隔が規格長さと一致すれば規格品", () => {
+    const r = layoutSeparators({
+      faceWidth: 3600, faceHeight: 3000, config: config({ formGap: 200 }),
+    });
+    expect(r.length).toBe(200);
+    expect(r.lengthType).toBe("standard");
+  });
+  it("マスタ方式(明示選択): 間隔180 + 加算0 + Pコン調整10×2 = 200 → 規格品", () => {
+    const r = layoutSeparators({
+      faceWidth: 3600, faceHeight: 3000, config: config({ lengthMode: "master_rule" }),
+    });
     expect(r.length).toBe(200);
     expect(r.lengthSource).toBe("master_rule");
     expect(r.lengthType).toBe("standard");
-    expect(r.lengthFormula).toContain("壁厚 180");
   });
   it("規格にない長さは特注として丸め単位で切り上げ", () => {
     const r = layoutSeparators({
-      faceWidth: 3600, faceHeight: 3000, config: config({ wallThickness: 192 }),
+      faceWidth: 3600, faceHeight: 3000,
+      config: config({ lengthMode: "master_rule", formGap: 192 }),
     });
     expect(r.lengthType).toBe("custom");
     expect(r.length).toBe(215); // 192 + 20 = 212 → 5 単位切り上げ
   });
 });
 
-describe("ルール未登録 (D-17)", () => {
-  it("計算を停止し、不足項目を表示する(数量を出さない)", () => {
+describe("長さ未確定時の停止 (D-17)", () => {
+  it("マスタ方式でルール未登録 → 計算を停止し、不足項目を表示する", () => {
     const r = layoutSeparators({
       faceWidth: 3600, faceHeight: 3000,
-      config: config({ finishCondition: "防水" }), // ルールなし
+      config: config({ lengthMode: "master_rule", finishCondition: "防水" }), // ルールなし
     });
     expect(r.blockers).toHaveLength(1);
     expect(r.blockers[0]!.code).toBe("SEPARATOR_LENGTH_UNDEFINED");
@@ -91,13 +106,21 @@ describe("ルール未登録 (D-17)", () => {
     expect(r.points).toEqual([]);
     expect(r.count.rounded).toBe(0);
   });
-  it("手入力長さがあれば計算できる", () => {
+  it("型枠間隔が未入力なら計算を停止する", () => {
+    const r = layoutSeparators({
+      faceWidth: 3600, faceHeight: 3000, config: config({ formGap: 0 }),
+    });
+    expect(r.blockers[0]!.code).toBe("SEPARATOR_FORM_GAP_UNDEFINED");
+    expect(r.count.rounded).toBe(0);
+  });
+  it("手入力長さは常に最優先", () => {
     const r = layoutSeparators({
       faceWidth: 3600, faceHeight: 3000,
-      config: config({ finishCondition: "防水", manualLength: 210 }),
+      config: config({ lengthMode: "master_rule", finishCondition: "防水", manualLength: 210 }),
     });
     expect(r.blockers).toEqual([]);
     expect(r.lengthSource).toBe("manual");
+    expect(r.length).toBe(210);
   });
 });
 
