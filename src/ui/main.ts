@@ -1,7 +1,11 @@
 // 型枠材料拾い出し 最小UI(フェーズ2の先行実装)。
 // 数量はすべて計算エンジン(src/core)で算出し、UIは入力と表示のみを担当する。
 
-import { aggregateProject } from "../core/aggregate.js";
+import { aggregateProject, type ProjectAggregate } from "../core/aggregate.js";
+import {
+  conditionsCsv, faceDetailCsv, materialTotalsCsv, memberRowsCsv, strippingCsv,
+} from "../core/export.js";
+import { initPlan, type PlanApi } from "./plan.js";
 import type {
   BattenSpec, FormTieSpec, PconSpec, PipeSpec, PlywoodSpec, SeparatorSpec,
 } from "../core/masters.js";
@@ -343,7 +347,7 @@ function numField(
   input.type = "number";
   input.step = "any";
   input.value = String(m[key] ?? "");
-  input.oninput = () => { m[key] = Number(input.value); };
+  input.oninput = () => { m[key] = Number(input.value); planApi?.redraw(); };
   el.append(label, input);
   return el;
 }
@@ -389,7 +393,11 @@ function flagField(
   return el;
 }
 
+let planApi: PlanApi | null = null;
+let selectedMemberIndex: number | null = null;
+
 function renderMembers(): void {
+  planApi?.redraw();
   const root = document.getElementById("members-list")!;
   root.innerHTML = "";
   if (members.length === 0) {
@@ -401,7 +409,8 @@ function renderMembers(): void {
   }
   members.forEach((m, idx) => {
     const card = document.createElement("div");
-    card.className = "member-card";
+    card.className = "member-card" + (idx === selectedMemberIndex ? " selected" : "");
+    card.id = `member-card-${idx}`;
     const head = document.createElement("div");
     head.className = "card-head";
     const title = document.createElement("span");
@@ -528,8 +537,7 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function renderResults(memberResults: MemberTakeoffResult[]): void {
-  const agg = aggregateProject(memberResults);
+function renderResults(memberResults: MemberTakeoffResult[], agg: ProjectAggregate): void {
   const root = document.getElementById("results")!;
   let html = "";
 
@@ -666,6 +674,35 @@ document.getElementById("btn-add-member")!.addEventListener("click", () => {
   renderMembers();
 });
 
+// ---------- 実行・CSV出力 ----------
+
+let lastRun: {
+  project: Project;
+  memberResults: MemberTakeoffResult[];
+  aggregate: ProjectAggregate;
+} | null = null;
+
+const EXPORT_BUTTONS = [
+  "btn-csv-materials", "btn-csv-members", "btn-csv-stripping",
+  "btn-csv-faces", "btn-csv-conditions",
+];
+
+function setExportEnabled(enabled: boolean): void {
+  for (const id of EXPORT_BUTTONS) {
+    (document.getElementById(id) as HTMLButtonElement).disabled = !enabled;
+  }
+}
+
+function downloadCsv(filename: string, content: string): void {
+  // Excel での文字化け防止のため UTF-8 BOM を付与
+  const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 document.getElementById("btn-run")!.addEventListener("click", () => {
   const errors: string[] = [];
   if (members.length === 0) errors.push("構造部材が未登録です");
@@ -674,10 +711,49 @@ document.getElementById("btn-run")!.addEventListener("click", () => {
     document.getElementById("results")!.innerHTML =
       `<div class="messages">${errors.map((e) => `<p class="error">【入力不備】${esc(e)}</p>`).join("")}</div>` +
       `<p class="hint">不足項目を入力してから再実行してください(推測では計算しません)。</p>`;
+    lastRun = null;
+    setExportEnabled(false);
     return;
   }
   const { memberResults } = runProject(project);
-  renderResults(memberResults);
+  const aggregate = aggregateProject(memberResults);
+  lastRun = { project, memberResults, aggregate };
+  setExportEnabled(true);
+  renderResults(memberResults, aggregate);
+});
+
+function wireExport(id: string, filename: string, gen: () => string): void {
+  document.getElementById(id)!.addEventListener("click", () => {
+    if (!lastRun) return;
+    downloadCsv(`${lastRun.project.name}_${filename}.csv`, gen());
+  });
+}
+wireExport("btn-csv-materials", "材料別合計", () => materialTotalsCsv(lastRun!.aggregate));
+wireExport("btn-csv-members", "部材別", () => memberRowsCsv(lastRun!.aggregate));
+wireExport("btn-csv-stripping", "脱型区分別", () => strippingCsv(lastRun!.aggregate));
+wireExport("btn-csv-faces", "型枠面別内訳", () => faceDetailCsv(lastRun!.memberResults));
+wireExport("btn-csv-conditions", "計算条件一覧", () => conditionsCsv(lastRun!.project));
+
+// ---------- 2D平面配置 ----------
+
+planApi = initPlan({
+  canvas: document.getElementById("plan-canvas") as HTMLCanvasElement,
+  modeSelect: document.getElementById("plan-mode") as HTMLSelectElement,
+  getMembers: () => members,
+  addMember: (m) => {
+    members.push(m);
+    renderMembers();
+  },
+  createMember: (kind) => newMember(kind),
+  onSelect: (index) => {
+    selectedMemberIndex = index;
+    renderMembers();
+    if (index !== null) {
+      document.getElementById(`member-card-${index}`)?.scrollIntoView({
+        behavior: "smooth", block: "nearest",
+      });
+    }
+  },
 });
 
 document.getElementById("btn-save")!.addEventListener("click", saveProject);

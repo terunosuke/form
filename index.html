@@ -51,9 +51,34 @@
       <div id="members-list"></div>
     </section>
 
+    <section id="plan-section">
+      <h2>4. 平面配置(2D)</h2>
+      <div class="row">
+        <select id="plan-mode">
+          <option value="select">選択・移動</option>
+          <option value="wall">壁を作図(2点)</option>
+          <option value="beam">梁を作図(2点)</option>
+          <option value="column">柱を作図(対角2点)</option>
+          <option value="slab">スラブを作図(対角2点)</option>
+          <option value="footing">フーチングを作図(対角2点)</option>
+        </select>
+        <span class="hint">クリックで作図 / ホイールで拡大縮小 / 余白ドラッグまたは右ドラッグで移動 / Esc で作図キャンセル。
+          作図した寸法・厚さ・高さは部材カードで修正してください。平面配置は数量計算に影響しません。</span>
+      </div>
+      <canvas id="plan-canvas" width="1040" height="520"></canvas>
+    </section>
+
     <section id="run-section">
       <div class="row">
         <button id="btn-run" type="button" class="primary">拾い出しを実行</button>
+      </div>
+      <div class="row" id="export-row">
+        <span class="hint">CSV出力(Excel対応・UTF-8 BOM付き):</span>
+        <button id="btn-csv-materials" type="button" disabled>材料別合計</button>
+        <button id="btn-csv-members" type="button" disabled>部材別</button>
+        <button id="btn-csv-stripping" type="button" disabled>脱型区分別</button>
+        <button id="btn-csv-faces" type="button" disabled>型枠面別内訳</button>
+        <button id="btn-csv-conditions" type="button" disabled>計算条件一覧</button>
       </div>
       <div id="results"></div>
     </section>

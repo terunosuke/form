@@ -12,12 +12,19 @@ import {
 
 export const PROJECT_FORMAT_VERSION = 1;
 
+/** 2D平面図上の配置(数量計算には影響しない。作図・表示用) */
+export interface PlanPlacement {
+  x: number; // mm
+  y: number; // mm
+  angleDeg: number; // 反時計回り(壁・梁の軸方向)
+}
+
 export type MemberInput =
-  | ({ kind: "wall" } & WallTakeoffInput)
-  | ({ kind: "column" } & ColumnTakeoffInput)
-  | ({ kind: "beam" } & BeamTakeoffInput)
-  | ({ kind: "slab" } & SlabTakeoffInput)
-  | ({ kind: "footing" } & FootingTakeoffInput);
+  | ({ kind: "wall"; placement?: PlanPlacement } & WallTakeoffInput)
+  | ({ kind: "column"; placement?: PlanPlacement } & ColumnTakeoffInput)
+  | ({ kind: "beam"; placement?: PlanPlacement } & BeamTakeoffInput)
+  | ({ kind: "slab"; placement?: PlanPlacement } & SlabTakeoffInput)
+  | ({ kind: "footing"; placement?: PlanPlacement } & FootingTakeoffInput);
 
 export interface Project {
   formatVersion: number;
