@@ -17,6 +17,8 @@ export interface PlanPlacement {
   x: number; // mm
   y: number; // mm
   angleDeg: number; // 反時計回り(壁・梁の軸方向)
+  /** 3D表示用の底高さ(mm)。梁・スラブの表示位置。省略時 0 */
+  z?: number;
 }
 
 export type MemberInput =

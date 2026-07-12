@@ -40,8 +40,11 @@ function v3(x: number, y: number, z: number): THREE.Vector3 {
   return new THREE.Vector3(x, z, y); // (平面x, 高さ, 平面y)
 }
 
-function placementOf(m: MemberInput, index: number): { x: number; y: number; angleDeg: number } {
-  return m.placement ?? { x: 0, y: 5000 + index * 3000, angleDeg: 0 };
+function placementOf(
+  m: MemberInput, index: number,
+): { x: number; y: number; angleDeg: number; z: number } {
+  const pl = m.placement ?? { x: 0, y: 5000 + index * 3000, angleDeg: 0 };
+  return { x: pl.x, y: pl.y, angleDeg: pl.angleDeg, z: pl.z ?? 0 };
 }
 
 /** 部材と面種類から、面のローカル座標系(mm)を求める */
@@ -53,7 +56,7 @@ function faceFrame(m: MemberInput, index: number, faceType: TakeoffFaceType): Fr
   };
   const P = (lx: number, ly: number, z: number): THREE.Vector3 => {
     const [x, y] = rot2(lx, ly, pl.angleDeg);
-    return v3(pl.x + x, pl.y + y, z);
+    return v3(pl.x + x, pl.y + y, pl.z + z);
   };
   const UP = new THREE.Vector3(0, 1, 0);
   const DOWN = new THREE.Vector3(0, -1, 0);
@@ -164,7 +167,7 @@ function concreteMesh(m: MemberInput, index: number, mat: THREE.Material): THREE
     const geo = new THREE.BoxGeometry(lx, h, ly);
     const mesh = new THREE.Mesh(geo, mat);
     const [wx, wy] = rot2(cx, cy, pl.angleDeg);
-    mesh.position.set(pl.x + wx, h / 2, pl.y + wy);
+    mesh.position.set(pl.x + wx, pl.z + h / 2, pl.y + wy);
     mesh.rotation.y = (-pl.angleDeg * Math.PI) / 180;
     return mesh;
   };

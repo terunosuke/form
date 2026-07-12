@@ -5,6 +5,7 @@ import { aggregateProject, type ProjectAggregate } from "../core/aggregate.js";
 import {
   conditionsCsv, faceDetailCsv, materialTotalsCsv, memberRowsCsv, strippingCsv,
 } from "../core/export.js";
+import { faceLayoutSvg } from "../core/svg.js";
 import { initPlan, type PlanApi } from "./plan.js";
 import { initThreeView, type LayerName, type ThreeViewApi } from "./three-view.js";
 import type {
@@ -379,6 +380,21 @@ function selectField(
   el.append(label, sel);
   return el;
 }
+/** 3D表示用の底高さZ(数量計算に影響しない) */
+function zField(m: MemberInput, idx: number): HTMLElement {
+  const el = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.value = String(m.placement?.z ?? 0);
+  input.oninput = () => {
+    if (!m.placement) m.placement = { x: 0, y: 5000 + idx * 3000, angleDeg: 0 };
+    m.placement.z = Number(input.value);
+  };
+  el.append("表示底高さZ (mm, 3D用)", input);
+  return el;
+}
+
 function flagField(
   m: Record<string, unknown>, key: string, index: number, label: string,
 ): HTMLElement {
@@ -458,6 +474,7 @@ function renderMembers(): void {
           selectField(r, "bottomWidthRule", "梁底幅", [
             ["bottom_wins", "底勝ち(=梁幅)"], ["side_wins", "側勝ち(控除)"],
           ]),
+          zField(m, idx),
         );
         break;
       case "slab":
@@ -470,6 +487,7 @@ function renderMembers(): void {
           flagField(r, "edgeFormFlags", 1, "端部X+"),
           flagField(r, "edgeFormFlags", 2, "端部Y-"),
           flagField(r, "edgeFormFlags", 3, "端部Y+"),
+          zField(m, idx),
         );
         break;
       case "footing":
@@ -602,8 +620,9 @@ function renderResults(memberResults: MemberTakeoffResult[], agg: ProjectAggrega
     ]),
   );
 
-  // 計算根拠(§25 トレース)
-  html += "<h3>計算根拠</h3>";
+  // 計算根拠(§25 トレース)+ 板割図
+  html += "<h3>計算根拠・板割図</h3>";
+  const mt = lastRun?.project.materials;
   for (const m of memberResults) {
     html += `<details><summary>${m.memberId}(${KIND_LABEL[m.memberKind]})の計算過程</summary>`;
     for (const f of m.faces) {
@@ -614,6 +633,17 @@ function renderResults(memberResults: MemberTakeoffResult[], agg: ProjectAggrega
         `・鋼管: ${esc(f.pipe.formula)}` +
         (f.notes.length > 0 ? `\n・注記: ${esc(f.notes.join(" / "))}` : "") +
         `</p>`;
+      // 板割図(セパはA面側の格子を重ねる)
+      const pair = m.pairs.find((p) => p.faceIdA === f.faceId);
+      const svg = faceLayoutSvg(f, {
+        separatorPoints: pair?.separator.points,
+        battenSectionWidth: mt?.batten.spec.sectionWidth,
+        pipeHeight: mt?.pipe.spec.height,
+      });
+      const href = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      html += `<details class="itawari"><summary>板割図: ${f.faceId}</summary>` +
+        `<div class="svg-wrap">${svg}</div>` +
+        `<a href="${href}" download="${f.faceId}_板割図.svg">SVGをダウンロード</a></details>`;
     }
     for (const p of m.pairs) {
       html += `<p class="formula"><b>${p.pairId}</b>(型枠間隔 ${p.formGap}mm)\n` +
