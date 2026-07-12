@@ -25,23 +25,35 @@ export interface BeamBottomWidthResult {
 
 /**
  * 梁底型枠幅の算出(U-5)。
- * side_wins の場合は側枠のベニヤ厚と桟木せいが必要。未指定なら例外にせず
- * 呼び出し側で不足情報(MissingInput)として扱えるよう null を返す。
+ * 底勝ち(標準): 側面のベニヤ・桟木が梁底に乗るよう、梁底を側枠構成分だけ広げる
+ *   (梁底幅 = 梁幅 + (ベニヤ厚 + 桟木せい) × 2)。
+ * 側勝ち: 梁底が側枠の内側に納まるよう、梁底を側枠構成分だけ狭める。
+ * sideBuildUp が未指定のときは構成 0(梁幅そのまま)として扱う。
  */
 export function beamBottomWidth(
   beamWidth: number,
   rule: BeamBottomWidthRule,
   sideBuildUp?: { plywoodThickness: number; battenDepth: number },
-): BeamBottomWidthResult | null {
+): BeamBottomWidthResult {
+  const bu = sideBuildUp ? sideBuildUp.plywoodThickness + sideBuildUp.battenDepth : 0;
   if (rule === "bottom_wins") {
-    return { width: beamWidth, formula: `底勝ち: 梁底幅 = 梁幅 ${beamWidth}` };
+    const width = beamWidth + bu * 2;
+    return {
+      width,
+      formula:
+        `底勝ち: 梁底幅 = 梁幅 ${beamWidth} + (ベニヤ厚 + 桟木せい ${bu}) × 2 = ${width}` +
+        `(側面が梁底に乗る)`,
+    };
   }
-  if (!sideBuildUp) return null;
-  const deduct = (sideBuildUp.plywoodThickness + sideBuildUp.battenDepth) * 2;
+  const width = beamWidth - bu * 2;
   return {
-    width: beamWidth - deduct,
+    width,
     formula:
-      `側勝ち: 梁底幅 = 梁幅 ${beamWidth} − (ベニヤ厚 ${sideBuildUp.plywoodThickness} + ` +
-      `桟木せい ${sideBuildUp.battenDepth}) × 2 = ${beamWidth - deduct}`,
+      `側勝ち: 梁底幅 = 梁幅 ${beamWidth} − (ベニヤ厚 + 桟木せい ${bu}) × 2 = ${width}`,
   };
+}
+
+/** 側枠構成(ベニヤ厚 + 桟木せい)。底面が側面を受ける寸法拡張に使う */
+export function sideBuildUpMm(plywoodThickness: number, battenDepth: number): number {
+  return plywoodThickness + battenDepth;
 }

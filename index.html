@@ -79,6 +79,7 @@
           <option value="footing">フーチングを作図(対角2点)</option>
         </select>
         <span class="hint">クリックで作図 / ホイールで拡大縮小 / 余白ドラッグまたは右ドラッグで移動 / Esc で作図キャンセル。
+          壁・梁の作図中に <b>Shift</b> を押すと水平/垂直に固定できます。
           作図した寸法・厚さ・高さは部材カードで修正してください。平面配置は数量計算に影響しません。</span>
       </div>
       <canvas id="plan-canvas" width="1040" height="520"></canvas>
@@ -87,8 +88,9 @@
     <section id="junction-section">
       <h2>5. 取り合い・重複控除(勝ち負け)</h2>
       <p class="hint">平面配置から柱×壁・柱×梁(柱勝ち)、壁×壁(先に登録した壁が通し)、
+        壁×梁の同一ライン(壁の上に梁が乗る→梁底の壁部分を控除)、
         梁×スラブ底(梁勝ち)の重なりを自動検出します。候補ごとに控除する/しないを選択できます。
-        控除箇所は板割図に斜線で表示されます。壁×梁の重ね(同一位置の併存)は控除しません。</p>
+        控除箇所は板割図に斜線で表示されます。</p>
       <div id="junctions-list"></div>
     </section>
 
@@ -100,8 +102,10 @@
         <label class="inline"><input type="checkbox" id="layer-batten" checked />桟木</label>
         <label class="inline"><input type="checkbox" id="layer-pipe" checked />鋼管</label>
         <label class="inline"><input type="checkbox" id="layer-separator" checked />セパレーター</label>
+        <label class="inline"><input type="checkbox" id="layer-formtie" checked />フォームタイ</label>
+        <label class="inline"><input type="checkbox" id="layer-pcon" />Pコン</label>
         <span class="hint">「拾い出しを実行」後に表示されます。ドラッグで回転 / ホイールで拡大縮小 / 右ドラッグで移動。
-          フォームタイ・Pコンの3D表示と梁・スラブの配置高さは将来対応です(現状は下端0で表示)。</span>
+          梁・スラブの配置高さは各部材カードの「表示底高さZ」で指定してください。</span>
       </div>
       <div id="three-container"></div>
     </section>

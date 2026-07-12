@@ -422,6 +422,10 @@ export interface BeamTakeoffInput {
   separatorsOnSides?: boolean;
   deductionsLeft?: Rect[];
   deductionsRight?: Rect[];
+  /** 梁底の控除領域(梁長さ方向 U × 梁底幅 V) */
+  deductionsBottom?: Rect[];
+  /** 梁底のうち控除する梁長さ方向の範囲(壁の上に梁が乗る場合の壁部分など) */
+  bottomDeductionsU?: [number, number][];
 }
 
 export function takeoffBeam(input: BeamTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
@@ -459,30 +463,31 @@ export function takeoffBeam(input: BeamTakeoffInput, config: MaterialConfig): Me
     );
   }
   if (input.bottomForm) {
-    // 梁底は梁側と別オブジェクト・別脱型区分(§10)。幅は U-5 の設定で決定
+    // 梁底は梁側と別オブジェクト・別脱型区分(§10)。幅は U-5 の設定で決定。
+    // 側枠構成(ベニヤ厚 + 桟木せい)は材料条件から取得し、側面が梁底に乗るよう拡張する。
     const rule = input.bottomWidthRule ?? CONFIRMED_DEFAULTS.beamBottomWidthRule;
-    const bw = beamBottomWidth(input.width, rule, input.sideBuildUp);
-    if (bw === null) {
-      blockers.push({
-        code: "BEAM_BOTTOM_WIDTH_UNDEFINED",
-        message:
-          `梁 ${input.memberId} の梁底幅を側勝ちで算出するには、側枠のベニヤ厚と桟木せいの入力が必要です`,
-      });
-    } else {
-      const face = takeoffFace({
-        faceId: `${input.memberId}-B`,
-        memberId: input.memberId,
-        faceType: "beam_bottom",
-        strippingGroup: "beam_bottom",
-        supportRelated: true,
-        width: input.length, // U = 梁長さ方向
-        height: bw.width, // V = 梁幅方向(水平面)
-        deductions: [],
-        config,
-      });
-      face.notes.push(bw.formula);
-      faces.push(face);
-    }
+    const buildUp = input.sideBuildUp ?? {
+      plywoodThickness: config.plywood.spec.thickness,
+      battenDepth: config.batten.spec.sectionDepth,
+    };
+    const bw = beamBottomWidth(input.width, rule, buildUp);
+    // 壁の上に梁が乗る等の控除(梁長さ方向の範囲 → 梁底全幅を控除)
+    const rangeDeductions: Rect[] = (input.bottomDeductionsU ?? []).map(([u0, u1]) => ({
+      u: u0, v: 0, w: Math.max(0, u1 - u0), h: bw.width,
+    }));
+    const face = takeoffFace({
+      faceId: `${input.memberId}-B`,
+      memberId: input.memberId,
+      faceType: "beam_bottom",
+      strippingGroup: "beam_bottom",
+      supportRelated: true,
+      width: input.length, // U = 梁長さ方向
+      height: bw.width, // V = 梁幅方向(水平面)
+      deductions: [...(input.deductionsBottom ?? []), ...rangeDeductions],
+      config,
+    });
+    face.notes.push(bw.formula);
+    faces.push(face);
   }
   const ends = input.endForms ?? { start: false, end: false };
   for (const [key, flag] of [["start", ends.start], ["end", ends.end]] as const) {
@@ -535,22 +540,33 @@ export interface SlabTakeoffInput {
 
 export function takeoffSlab(input: SlabTakeoffInput, config: MaterialConfig): MemberTakeoffResult {
   const faces: FaceTakeoff[] = [];
-  if (input.bottomForm) {
-    faces.push(
-      takeoffFace({
-        faceId: `${input.memberId}-B`,
-        memberId: input.memberId,
-        faceType: "slab_bottom",
-        strippingGroup: "slab_bottom",
-        supportRelated: true,
-        width: input.lengthX, // U = X 方向
-        height: input.lengthY, // V = Y 方向(水平面)
-        deductions: input.deductionsBottom ?? [],
-        config,
-      }),
-    );
-  }
   const flags = input.edgeFormFlags ?? [false, false, false, false];
+  if (input.bottomForm) {
+    // 端部型枠(側面)がスラブ底に乗るよう、端部がある辺の分だけスラブ底を拡張する。
+    const bu = config.plywood.spec.thickness + config.batten.spec.sectionDepth;
+    const extraX = (flags[0] ? bu : 0) + (flags[1] ? bu : 0); // X- / X+
+    const extraY = (flags[2] ? bu : 0) + (flags[3] ? bu : 0); // Y- / Y+
+    const bottomW = input.lengthX + extraX;
+    const bottomH = input.lengthY + extraY;
+    const face = takeoffFace({
+      faceId: `${input.memberId}-B`,
+      memberId: input.memberId,
+      faceType: "slab_bottom",
+      strippingGroup: "slab_bottom",
+      supportRelated: true,
+      width: bottomW, // U = X 方向(端部を受ける拡張含む)
+      height: bottomH, // V = Y 方向(水平面)
+      deductions: input.deductionsBottom ?? [],
+      config,
+    });
+    if (extraX > 0 || extraY > 0) {
+      face.notes.push(
+        `スラブ底は端部型枠を受けるため拡張: ${input.lengthX}×${input.lengthY} → ${bottomW}×${bottomH}` +
+        `(側枠構成 ${bu}/辺)`,
+      );
+    }
+    faces.push(face);
+  }
   const edgeWidths = [input.lengthY, input.lengthY, input.lengthX, input.lengthX];
   for (let i = 0; i < 4; i++) {
     if (!flags[i]) continue;

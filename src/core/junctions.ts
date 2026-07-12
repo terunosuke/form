@@ -14,7 +14,7 @@ export type JunctionPolicy = "deduct" | "count_both";
 
 export interface JunctionCandidate {
   id: string; // 例 "C1~W1"
-  kind: "column_wall" | "column_beam" | "wall_wall" | "beam_slab";
+  kind: "column_wall" | "column_beam" | "wall_wall" | "wall_beam" | "beam_slab";
   winnerId: string; // 勝ち側(通し)
   loserId: string; // 負け側(控除される側)
   /** 負け側が壁・梁のとき: 軸に沿った控除範囲(mm、部材始点基準) */
@@ -190,6 +190,45 @@ export function detectJunctions(members: MemberInput[]): JunctionCandidate[] {
     }
   }
 
+  // ---- 壁×梁(平面的に同一ライン = 壁の上に梁が乗る。梁底の壁部分を控除) ----
+  // §7 の「壁と梁が同じ通り」に相当。標準は壁が通し、梁底のうち壁の直上を控除する。
+  for (const wall of members) {
+    if (wall.kind !== "wall" || !wall.placement) continue;
+    const wSeg = axisSeg(wall)!;
+    for (const beam of members) {
+      if (beam.kind !== "beam" || !beam.placement) continue;
+      const bSeg = axisSeg(beam)!;
+      // 軸が平行か(角度差 5°以内)
+      const cross = wSeg.dx * bSeg.dy - wSeg.dy * bSeg.dx;
+      if (Math.abs(cross) > Math.sin((5 * Math.PI) / 180)) continue;
+      // 梁軸上での壁の投影範囲
+      const t0 = (wall.placement.x - beam.placement.x) * bSeg.dx +
+        (wall.placement.y - beam.placement.y) * bSeg.dy;
+      const t1 = t0 + (wSeg.dx * bSeg.dx + wSeg.dy * bSeg.dy) * wall.length;
+      // 梁軸からの横ずれ(同一ラインとみなせるか)
+      const nx = -bSeg.dy;
+      const ny = bSeg.dx;
+      const lateral = Math.abs(
+        (wall.placement.x - beam.placement.x) * nx + (wall.placement.y - beam.placement.y) * ny,
+      );
+      if (lateral > (wall.thickness + beam.width) / 2 + 50) continue;
+      const u0 = Math.max(0, Math.min(t0, t1));
+      const u1 = Math.min(beam.length, Math.max(t0, t1));
+      if (u1 - u0 < 50) continue;
+      out.push({
+        id: `${wall.memberId}~${beam.memberId}`,
+        kind: "wall_beam",
+        winnerId: wall.memberId,
+        loserId: beam.memberId,
+        uRange: [fix(u0), fix(u1)],
+        defaultPolicy: "deduct",
+        description:
+          `${wall.memberId}(壁)の上に ${beam.memberId}(梁)が乗るため、` +
+          `梁底の重なり ${fix(u0)}〜${fix(u1)}mm を控除します`,
+      });
+    }
+  }
+
   // ---- 梁×スラブ(梁勝ち: スラブ底から梁の通過範囲を控除) ----
   for (const slab of members) {
     if (slab.kind !== "slab" || !slab.placement || !slab.bottomForm) continue;
@@ -253,7 +292,10 @@ export function applyJunctions(
     if (policy !== "deduct") continue; // 両方計上 = 控除しない
     const m = byId.get(c.loserId);
     if (!m) continue;
-    if ((m.kind === "wall" || m.kind === "beam") && c.uRange && c.vRange) {
+    if (c.kind === "wall_beam" && m.kind === "beam" && c.uRange) {
+      // 壁の上に梁が乗る: 梁底の壁部分を控除(梁側は控除しない)
+      m.bottomDeductionsU = [...(m.bottomDeductionsU ?? []), c.uRange];
+    } else if ((m.kind === "wall" || m.kind === "beam") && c.uRange && c.vRange) {
       const region: Rect = {
         u: c.uRange[0],
         v: c.vRange[0],

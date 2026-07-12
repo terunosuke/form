@@ -1,6 +1,6 @@
 // 3D確認画面(設計書 §17・§23 ステップ8)。
 // 拾い出し結果(型枠面+材料割付)を、部材の平面配置から3D空間に再構成して表示する。
-// 材料別(躯体/ベニヤ/桟木/鋼管/セパレーター)の表示切替に対応。
+// 材料別(躯体/ベニヤ/桟木/鋼管/セパレーター/フォームタイ/Pコン)の表示切替に対応。
 // 表示は確認用であり、数量はエンジンの計算結果をそのまま使う。
 
 import * as THREE from "three";
@@ -8,7 +8,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { MemberInput, ProjectRunResult, Project } from "../core/project.js";
 import type { FaceTakeoff, MemberTakeoffResult, TakeoffFaceType } from "../core/takeoff.js";
 
-export type LayerName = "concrete" | "plywood" | "batten" | "pipe" | "separator";
+export type LayerName =
+  | "concrete" | "plywood" | "batten" | "pipe" | "separator" | "formtie" | "pcon";
 
 export interface ThreeViewApi {
   update(project: Project, run: ProjectRunResult): void;
@@ -25,9 +26,12 @@ interface Frame {
 const COLORS = {
   concrete: 0xb0b7bd,
   plywood: 0xcaa472,
+  battenJoint: 0x6e4a22, // ベニヤ目地の線
   batten: 0x8a5a2b,
   pipe: 0x4a6f8a,
   separator: 0xd33e3e,
+  formtie: 0x3a3f45, // フォームタイ金物
+  pcon: 0xf0c05a, // Pコン
 };
 
 function rot2(x: number, y: number, deg: number): [number, number] {
@@ -151,7 +155,10 @@ function boxOnFrame(
 ): THREE.Mesh {
   const geo = new THREE.BoxGeometry(su, sv, sn);
   const mesh = new THREE.Mesh(geo, material);
-  const basis = new THREE.Matrix4().makeBasis(frame.u, frame.v, frame.n);
+  // 回転は必ず右手系の基底で作る(u×v が n と逆向きの面でも鏡像反転させない)。
+  // 位置決めは実際の外向き法線 frame.n を使う(厚み方向は対称なので符号は無関係)。
+  const w = frame.u.clone().cross(frame.v).normalize();
+  const basis = new THREE.Matrix4().makeBasis(frame.u, frame.v, w);
   mesh.setRotationFromMatrix(basis);
   mesh.position
     .copy(frame.origin)
@@ -215,6 +222,8 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
     batten: new THREE.Group(),
     pipe: new THREE.Group(),
     separator: new THREE.Group(),
+    formtie: new THREE.Group(),
+    pcon: new THREE.Group(),
   };
   for (const g of Object.values(layers)) scene.add(g);
 
@@ -223,15 +232,19 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
       color: COLORS.concrete, transparent: true, opacity: 0.35,
     }),
     plywood: new THREE.MeshLambertMaterial({ color: COLORS.plywood }),
+    plywoodJoint: new THREE.LineBasicMaterial({ color: COLORS.battenJoint }),
     batten: new THREE.MeshLambertMaterial({ color: COLORS.batten }),
     pipe: new THREE.MeshLambertMaterial({ color: COLORS.pipe }),
     separator: new THREE.MeshLambertMaterial({ color: COLORS.separator }),
+    formtie: new THREE.MeshLambertMaterial({ color: COLORS.formtie }),
+    pcon: new THREE.MeshLambertMaterial({ color: COLORS.pcon }),
   };
 
   function clearGroup(g: THREE.Group): void {
     while (g.children.length > 0) {
       const c = g.children.pop()!;
-      if (c instanceof THREE.Mesh) c.geometry.dispose();
+      const geo = (c as { geometry?: THREE.BufferGeometry }).geometry;
+      if (geo) geo.dispose();
     }
   }
 
@@ -240,14 +253,21 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
     plyT: number, battenDepth: number, battenWidth: number,
     pipeW: number, pipeH: number,
   ): void {
-    // ベニヤ(面ローカルUV → 3D)
+    // ベニヤ(面ローカルUV → 3D)。目地(ジョイント)が分かるよう各パネルの外形線を重ねる
     for (const p of face.plywood.placements) {
-      layers.plywood.add(boxOnFrame(
+      const panel = boxOnFrame(
         frame,
         p.positionUV.u + p.cutWidth / 2, p.positionUV.v + p.cutLength / 2, plyT / 2,
-        Math.max(p.cutWidth - 4, 4), Math.max(p.cutLength - 4, 4), plyT,
+        Math.max(p.cutWidth - 6, 4), Math.max(p.cutLength - 6, 4), plyT,
         mats.plywood,
-      ));
+      );
+      layers.plywood.add(panel);
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(panel.geometry), mats.plywoodJoint,
+      );
+      edges.position.copy(panel.position);
+      edges.quaternion.copy(panel.quaternion);
+      layers.plywood.add(edges);
     }
     // 桟木(縦材。ベニヤの外側)
     for (const b of face.batten.placements) {
@@ -297,23 +317,53 @@ export function initThreeView(container: HTMLElement): ThreeViewApi {
         frames.set(face.faceId, frame);
         addFaceMaterials(face, frame, plyT, battenDepth, battenWidth, pipeW, pipeH);
       }
-      // セパレーター(対向面ペア。面Aの表面から間隔分だけ貫通)
+      // セパレーター・フォームタイ・Pコン(対向面ペア。面Aの座標系のみで両側を作図)
+      const outer = plyT + battenDepth + pipeH; // 型枠表面(鋼管外面)までの距離
       for (const pair of mr.pairs) {
         const frame = frames.get(pair.faceIdA);
         if (!frame || pair.separator.points.length === 0) continue;
-        for (const pt of pair.separator.points) {
-          const geo = new THREE.CylinderGeometry(10, 10, pair.formGap + plyT * 2, 8);
-          const mesh = new THREE.Mesh(geo, mats.separator);
-          const q = new THREE.Quaternion().setFromUnitVectors(
-            new THREE.Vector3(0, 1, 0), frame.n.clone(),
-          );
-          mesh.setRotationFromQuaternion(q);
-          mesh.position
-            .copy(frame.origin)
+        const q = new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0), frame.n.clone(),
+        );
+        const at = (nOffset: number, pt: { u: number; v: number }): THREE.Vector3 =>
+          frame.origin.clone()
             .addScaledVector(frame.u, pt.u)
             .addScaledVector(frame.v, pt.v)
-            .addScaledVector(frame.n, -(pair.formGap / 2));
-          layers.separator.add(mesh);
+            .addScaledVector(frame.n, nOffset);
+        for (const pt of pair.separator.points) {
+          // セパレーター(貫通ロッド)
+          const rod = new THREE.Mesh(
+            new THREE.CylinderGeometry(10, 10, pair.formGap + plyT * 2, 8), mats.separator,
+          );
+          rod.setRotationFromQuaternion(q);
+          rod.position.copy(at(-(pair.formGap / 2), pt));
+          layers.separator.add(rod);
+
+          // フォームタイ(型枠表面の外側。大きめの座金+ナットで視認性を確保)
+          for (const side of [outer, -(pair.formGap + outer)]) {
+            const plate = new THREE.Mesh(
+              new THREE.CylinderGeometry(60, 60, 24, 20), mats.formtie,
+            );
+            plate.setRotationFromQuaternion(q);
+            plate.position.copy(at(side + (side > 0 ? 12 : -12), pt));
+            layers.formtie.add(plate);
+            const nut = new THREE.Mesh(
+              new THREE.CylinderGeometry(34, 34, 90, 6), mats.formtie,
+            );
+            nut.setRotationFromQuaternion(q);
+            nut.position.copy(at(side + (side > 0 ? 68 : -68), pt));
+            layers.formtie.add(nut);
+          }
+
+          // Pコン(コンクリート面側。両面に円錐台)
+          for (const [base, dir] of [[0, 1], [-pair.formGap, -1]] as const) {
+            const cone = new THREE.Mesh(
+              new THREE.CylinderGeometry(18, 32, 45, 16), mats.pcon,
+            );
+            cone.setRotationFromQuaternion(q);
+            cone.position.copy(at(base + dir * 22, pt));
+            layers.pcon.add(cone);
+          }
         }
       }
     }

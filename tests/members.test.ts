@@ -90,8 +90,8 @@ describe("梁の拾い出し(梁底の独立管理 E-25)", () => {
     expect(groups).toContainEqual(["beam_bottom", "beam_bottom"]);
     const bottom = r.faces.find((f) => f.faceType === "beam_bottom")!;
     expect(bottom.supportRelated).toBe(true);
-    // 底勝ち(既定): 梁底幅 = 梁幅
-    expect(bottom.height).toBe(600);
+    // 底勝ち(既定): 梁底幅 = 梁幅 + (ベニヤ厚12 + 桟木せい60)×2 = 744(側面が乗る)
+    expect(bottom.height).toBe(600 + (12 + 60) * 2);
     expect(bottom.notes.some((n) => n.includes("底勝ち"))).toBe(true);
   });
 
@@ -102,23 +102,34 @@ describe("梁の拾い出し(梁底の独立管理 E-25)", () => {
     expect(r.pairs[0]!.separator.length).toBe(600);
   });
 
-  it("側勝ちで側枠構成が未入力なら計算を停止する", () => {
+  it("側勝ち: 側枠構成を材料条件から取得して控除幅になる", () => {
     const r = takeoffBeam({ ...beam, bottomWidthRule: "side_wins" }, config());
-    expect(r.blockers.some((b) => b.code === "BEAM_BOTTOM_WIDTH_UNDEFINED")).toBe(true);
-    expect(r.faces.some((f) => f.faceType === "beam_bottom")).toBe(false);
+    expect(r.blockers).toEqual([]);
+    const bottom = r.faces.find((f) => f.faceType === "beam_bottom")!;
+    expect(bottom.height).toBe(600 - (12 + 60) * 2); // config の 12/60 から算出
   });
 
-  it("側勝ち+構成入力ありなら控除された幅になる", () => {
+  it("側勝ち+構成入力ありなら入力値で控除される", () => {
     const r = takeoffBeam(
       {
         ...beam,
         bottomWidthRule: "side_wins",
-        sideBuildUp: { plywoodThickness: 12, battenDepth: 60 },
+        sideBuildUp: { plywoodThickness: 15, battenDepth: 45 },
       },
       config(),
     );
     const bottom = r.faces.find((f) => f.faceType === "beam_bottom")!;
-    expect(bottom.height).toBe(600 - (12 + 60) * 2);
+    expect(bottom.height).toBe(600 - (15 + 45) * 2);
+  });
+
+  it("底勝ち: 壁の上に梁が乗ると梁底の壁部分だけ控除される", () => {
+    const r = takeoffBeam(
+      { ...beam, bottomDeductionsU: [[1000, 2000]] },
+      config(),
+    );
+    const bottom = r.faces.find((f) => f.faceType === "beam_bottom")!;
+    // 梁長さ5400、梁底幅744。控除 1000mm × 744
+    expect(bottom.netArea).toBe(5400 * 744 - 1000 * 744);
   });
 });
 
@@ -135,9 +146,20 @@ describe("スラブの拾い出し", () => {
     const bottom = r.faces[0]!;
     expect(bottom.strippingGroup).toBe("slab_bottom");
     expect(bottom.supportRelated).toBe(true);
-    expect(bottom.area).toBe(5460 * 3640);
+    // 端部型枠(X- と Y-)を受けるため、その辺の側枠構成(12+60=72)分だけ拡張
+    expect(bottom.width).toBe(5460 + 72);
+    expect(bottom.height).toBe(3640 + 72);
     expect(r.pairs).toHaveLength(0);
     expect(r.summary.separatorCount).toBe(0);
+  });
+
+  it("端部型枠なしのスラブ底は拡張しない", () => {
+    const r = takeoffSlab(
+      { memberId: "S2", lengthX: 5000, lengthY: 3000, thickness: 200, bottomForm: true },
+      config(),
+    );
+    const bottom = r.faces[0]!;
+    expect(bottom.area).toBe(5000 * 3000);
   });
 });
 

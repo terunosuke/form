@@ -62,6 +62,15 @@ export function initPlan(opts: PlanOptions): PlanApi {
   let cursor: Point | null = null;
   let scaleMode = false; // 縮尺計測モード
   let scalePoint: Point | null = null; // 計測1点目(スナップなしの生座標)
+  let orthoLock = false; // Shift 押下中: 水平/垂直に固定して作図
+
+  /** Shift 押下時、始点から水平または垂直(近い方)に固定する */
+  function applyOrtho(from: Point, to: Point): Point {
+    if (!orthoLock) return to;
+    return Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+      ? { x: to.x, y: from.y } // 水平
+      : { x: from.x, y: to.y }; // 垂直
+  }
   let selected: number | null = null;
   let dragging: {
     index: number;
@@ -273,11 +282,12 @@ export function initPlan(opts: PlanOptions): PlanApi {
 
   function drawPreview(): void {
     if (!firstPoint || !cursor) return;
-    const p2 = snap(cursor);
+    const md = mode();
+    const isLine = md === "wall" || md === "beam";
+    const p2 = snap(isLine ? applyOrtho(firstPoint, cursor) : cursor);
     ctx.strokeStyle = "#e01b24";
     ctx.setLineDash([5, 5]);
-    const md = mode();
-    if (md === "wall" || md === "beam") {
+    if (isLine) {
       ctx.beginPath();
       ctx.moveTo(sx(firstPoint.x), sy(firstPoint.y));
       ctx.lineTo(sx(p2.x), sy(p2.y));
@@ -285,7 +295,10 @@ export function initPlan(opts: PlanOptions): PlanApi {
       const len = Math.round(Math.hypot(p2.x - firstPoint.x, p2.y - firstPoint.y));
       ctx.fillStyle = "#e01b24";
       ctx.font = "12px sans-serif";
-      ctx.fillText(`${len}mm`, sx((firstPoint.x + p2.x) / 2), sy((firstPoint.y + p2.y) / 2) - 6);
+      const suffix = orthoLock ? " (直交固定)" : "";
+      ctx.fillText(
+        `${len}mm${suffix}`, sx((firstPoint.x + p2.x) / 2), sy((firstPoint.y + p2.y) / 2) - 6,
+      );
     } else {
       ctx.strokeRect(
         sx(Math.min(firstPoint.x, p2.x)),
@@ -366,7 +379,9 @@ export function initPlan(opts: PlanOptions): PlanApi {
     const md = mode();
     if (md === "select" || !firstPoint) return;
     const p1 = firstPoint;
-    const p2 = snap(p2raw);
+    // 線もの(壁・梁)は Shift で水平/垂直固定
+    const constrained = md === "wall" || md === "beam" ? applyOrtho(p1, p2raw) : p2raw;
+    const p2 = snap(constrained);
     firstPoint = null;
 
     if (md === "wall" || md === "beam") {
@@ -400,6 +415,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
   }
 
   canvas.addEventListener("mousedown", (e) => {
+    orthoLock = e.shiftKey;
     const p = toWorld(e);
     if (e.button === 1 || e.button === 2) {
       panning = { startX: e.clientX, startY: e.clientY, panX0: panX, panY0: panY };
@@ -452,6 +468,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
   });
 
   canvas.addEventListener("mousemove", (e) => {
+    orthoLock = e.shiftKey;
     cursor = toWorld(e);
     if (panning) {
       panX = panning.panX0 - (e.clientX - panning.startX) / scale;
@@ -542,11 +559,21 @@ export function initPlan(opts: PlanOptions): PlanApi {
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") {
+      orthoLock = true;
+      if (firstPoint) redraw();
+    }
     if (e.key === "Escape") {
       firstPoint = null;
       scaleMode = false;
       scalePoint = null;
       redraw();
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") {
+      orthoLock = false;
+      if (firstPoint) redraw();
     }
   });
 

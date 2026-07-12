@@ -133,6 +133,47 @@ describe("壁×壁の検出 (E-26 相当)", () => {
   });
 });
 
+describe("壁×梁の同一ライン(壁の上に梁が乗る)", () => {
+  it("平行かつ同一通りの壁と梁 → 梁底の重なりを控除範囲として検出", () => {
+    const wall: MemberInput = {
+      kind: "wall", memberId: "W10", length: 4000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 1000, y: 0, angleDeg: 0 },
+    };
+    const beam: MemberInput = {
+      kind: "beam", memberId: "G10", length: 6000, width: 300, depth: 600,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: 0, y: 0, angleDeg: 0, z: 3000 }, // 壁天端に乗る
+    };
+    const cands = detectJunctions([wall, beam]);
+    expect(cands).toHaveLength(1);
+    const c = cands[0]!;
+    expect(c.kind).toBe("wall_beam");
+    expect(c.winnerId).toBe("W10");
+    expect(c.loserId).toBe("G10");
+    expect(c.uRange).toEqual([1000, 5000]); // 梁始点0基準で壁 1000〜5000
+
+    const applied = applyJunctions([wall, beam], cands, {});
+    const g = applied.find((m) => m.memberId === "G10")!;
+    if (g.kind !== "beam") throw new Error("型が不正");
+    expect(g.bottomDeductionsU).toEqual([[1000, 5000]]);
+    // 梁側は控除されない
+    expect(g.deductionsLeft ?? []).toEqual([]);
+  });
+
+  it("直交する壁と梁は同一ライン扱いしない(控除しない)", () => {
+    const wall: MemberInput = {
+      kind: "wall", memberId: "W11", length: 4000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 2000, y: -2000, angleDeg: 90 },
+    };
+    const beam: MemberInput = {
+      kind: "beam", memberId: "G11", length: 6000, width: 300, depth: 600,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: 0, y: 0, angleDeg: 0, z: 3000 },
+    };
+    expect(detectJunctions([wall, beam]).filter((c) => c.kind === "wall_beam")).toHaveLength(0);
+  });
+});
+
 describe("梁×スラブの検出", () => {
   const slab: MemberInput = {
     kind: "slab", memberId: "S1", lengthX: 6000, lengthY: 4000, thickness: 200,

@@ -972,9 +972,11 @@ function updateThreeView(project: Project, memberResults: MemberTakeoffResult[])
     const layerIds: [string, LayerName][] = [
       ["layer-concrete", "concrete"], ["layer-plywood", "plywood"],
       ["layer-batten", "batten"], ["layer-pipe", "pipe"], ["layer-separator", "separator"],
+      ["layer-formtie", "formtie"], ["layer-pcon", "pcon"],
     ];
     for (const [id, layer] of layerIds) {
       const cb = document.getElementById(id) as HTMLInputElement;
+      threeApi!.setLayerVisible(layer, cb.checked); // 初期状態を反映(Pコンは既定オフ)
       cb.addEventListener("change", () => threeApi!.setLayerVisible(layer, cb.checked));
     }
   }
