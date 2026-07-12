@@ -51,6 +51,8 @@ export interface Project {
   members: MemberInput[]; // 構造部材(形状・寸法・型枠面の指定)
   /** 元画像と縮尺(§26)。未読み込みなら undefined */
   underlay?: Underlay;
+  /** 取り合いの勝ち負け設定(§10・§21)。junction ID → 選択した処理 */
+  junctionPolicies?: Record<string, "deduct" | "count_both">;
   /** 手動修正内容(将来: 3D画面での個別修正を記録) */
   manualAdjustments: unknown[];
 }

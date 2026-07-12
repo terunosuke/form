@@ -18,3 +18,4 @@ export * from "./core/aggregate.js";
 export * from "./core/project.js";
 export * from "./core/export.js";
 export * from "./core/svg.js";
+export * from "./core/junctions.js";

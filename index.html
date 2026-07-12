@@ -82,8 +82,15 @@
       <canvas id="plan-canvas" width="1040" height="520"></canvas>
     </section>
 
+    <section id="junction-section">
+      <h2>5. 取り合い・重複控除(勝ち負け)</h2>
+      <p class="hint">平面配置から柱×壁・柱×梁の重なりを自動検出します(標準は柱勝ち=壁・梁側から控除)。
+        壁×壁・梁×スラブなどの自動検出は将来対応です。控除箇所は板割図に斜線で表示されます。</p>
+      <div id="junctions-list"></div>
+    </section>
+
     <section id="three-section">
-      <h2>5. 3D確認(材料別表示)</h2>
+      <h2>6. 3D確認(材料別表示)</h2>
       <div class="row">
         <label class="inline"><input type="checkbox" id="layer-concrete" checked />躯体</label>
         <label class="inline"><input type="checkbox" id="layer-plywood" checked />ベニヤ</label>

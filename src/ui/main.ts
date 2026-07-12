@@ -6,6 +6,9 @@ import {
   conditionsCsv, faceDetailCsv, materialTotalsCsv, memberRowsCsv, strippingCsv,
 } from "../core/export.js";
 import { faceLayoutSvg } from "../core/svg.js";
+import {
+  applyJunctions, detectJunctions, type JunctionPolicy,
+} from "../core/junctions.js";
 import { initPlan, type PlanApi, type UnderlayView } from "./plan.js";
 import { initThreeView, type LayerName, type ThreeViewApi } from "./three-view.js";
 import type {
@@ -349,7 +352,7 @@ function numField(
   input.type = "number";
   input.step = "any";
   input.value = String(m[key] ?? "");
-  input.oninput = () => { m[key] = Number(input.value); planApi?.redraw(); };
+  input.oninput = () => { m[key] = Number(input.value); planApi?.redraw(); renderJunctions(); };
   el.append(label, input);
   return el;
 }
@@ -412,9 +415,42 @@ function flagField(
 
 let planApi: PlanApi | null = null;
 let selectedMemberIndex: number | null = null;
+let junctionPolicies: Record<string, JunctionPolicy> = {};
+
+function renderJunctions(): void {
+  const root = document.getElementById("junctions-list");
+  if (!root) return;
+  const candidates = detectJunctions(members);
+  if (candidates.length === 0) {
+    root.innerHTML = `<p class="hint">重なりは検出されていません(平面配置済みの柱×壁・柱×梁が対象)。</p>`;
+    return;
+  }
+  root.innerHTML = "";
+  for (const c of candidates) {
+    const row = document.createElement("div");
+    row.className = "row junction-row";
+    const label = document.createElement("span");
+    label.textContent = c.description;
+    const sel = document.createElement("select");
+    for (const [v, t] of [
+      ["deduct", "柱勝ち: 控除する(標準)"],
+      ["count_both", "両方計上: 控除しない"],
+    ] as const) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = t;
+      sel.appendChild(o);
+    }
+    sel.value = junctionPolicies[c.id] ?? c.defaultPolicy;
+    sel.onchange = () => { junctionPolicies[c.id] = sel.value as JunctionPolicy; };
+    row.append(label, sel);
+    root.appendChild(row);
+  }
+}
 
 function renderMembers(): void {
   planApi?.redraw();
+  renderJunctions();
   const root = document.getElementById("members-list")!;
   root.innerHTML = "";
   if (members.length === 0) {
@@ -534,6 +570,7 @@ function buildProject(errors: string[]): Project {
           scaleSet: underlay.scaleSet,
         }
       : undefined,
+    junctionPolicies,
     manualAdjustments: [],
   };
 }
@@ -697,6 +734,7 @@ function loadProject(file: File): void {
     (document.getElementById("prj-section") as HTMLInputElement).value = r.project.workSection ?? "";
     (document.getElementById("prj-pour") as HTMLInputElement).value = r.project.pourSection ?? "";
     members = r.project.members;
+    junctionPolicies = r.project.junctionPolicies ?? {};
     if (r.project.underlay) {
       loadUnderlayImage(r.project.underlay.imageDataUrl, r.project.underlay);
     } else {
@@ -768,12 +806,18 @@ document.getElementById("btn-run")!.addEventListener("click", () => {
     setExportEnabled(false);
     return;
   }
-  const { memberResults } = runProject(project);
+  // 勝ち負け(取り合い)の控除を適用してから実行。保存用の形状は元のまま(§26)
+  const candidates = detectJunctions(members);
+  const effectiveProject: Project = {
+    ...project,
+    members: applyJunctions(members, candidates, junctionPolicies),
+  };
+  const { memberResults } = runProject(effectiveProject);
   const aggregate = aggregateProject(memberResults);
   lastRun = { project, memberResults, aggregate };
   setExportEnabled(true);
   renderResults(memberResults, aggregate);
-  updateThreeView(project, memberResults);
+  updateThreeView(effectiveProject, memberResults);
 });
 
 function wireExport(id: string, filename: string, gen: () => string): void {

@@ -54,6 +54,8 @@ details summary { cursor: pointer; color: var(--accent); }
   border-radius: 4px; overflow: hidden; }
 #three-container canvas { display: block; }
 details.itawari { margin: 4px 0 10px 14px; }
+.junction-row { border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 10px; justify-content: space-between; }
 .svg-wrap { border: 1px solid var(--border); border-radius: 4px; margin: 6px 0;
   overflow-x: auto; background: #fff; }
 .svg-wrap svg { display: block; }
