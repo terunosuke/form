@@ -6,7 +6,7 @@ import {
   conditionsCsv, faceDetailCsv, materialTotalsCsv, memberRowsCsv, strippingCsv,
 } from "../core/export.js";
 import { faceLayoutSvg } from "../core/svg.js";
-import { initPlan, type PlanApi } from "./plan.js";
+import { initPlan, type PlanApi, type UnderlayView } from "./plan.js";
 import { initThreeView, type LayerName, type ThreeViewApi } from "./three-view.js";
 import type {
   BattenSpec, FormTieSpec, PconSpec, PipeSpec, PlywoodSpec, SeparatorSpec,
@@ -524,6 +524,16 @@ function buildProject(errors: string[]): Project {
     unit: "mm",
     materials: readMaterials(errors),
     members,
+    underlay: underlay
+      ? {
+          imageDataUrl: underlay.imageDataUrl,
+          mmPerPx: underlay.mmPerPx,
+          offsetX: underlay.offsetX,
+          offsetY: underlay.offsetY,
+          opacity: underlay.opacity,
+          scaleSet: underlay.scaleSet,
+        }
+      : undefined,
     manualAdjustments: [],
   };
 }
@@ -687,6 +697,12 @@ function loadProject(file: File): void {
     (document.getElementById("prj-section") as HTMLInputElement).value = r.project.workSection ?? "";
     (document.getElementById("prj-pour") as HTMLInputElement).value = r.project.pourSection ?? "";
     members = r.project.members;
+    if (r.project.underlay) {
+      loadUnderlayImage(r.project.underlay.imageDataUrl, r.project.underlay);
+    } else {
+      underlay = null;
+      updateUnderlayUi();
+    }
     renderMembers();
     document.getElementById("results")!.innerHTML =
       `<p class="hint">プロジェクトを読み込みました。材料条件は画面の値が使われます。「拾い出しを実行」で再計算してください。</p>`;
@@ -737,6 +753,12 @@ function downloadCsv(filename: string, content: string): void {
 document.getElementById("btn-run")!.addEventListener("click", () => {
   const errors: string[] = [];
   if (members.length === 0) errors.push("構造部材が未登録です");
+  if (underlay && !underlay.scaleSet) {
+    errors.push(
+      "図面画像の縮尺が未設定です。「縮尺を設定」で2点をクリックし実寸を入力してください" +
+      "(縮尺未設定では拾い出しを実行できません)",
+    );
+  }
   const project = buildProject(errors);
   if (errors.length > 0) {
     document.getElementById("results")!.innerHTML =
@@ -785,6 +807,77 @@ function updateThreeView(project: Project, memberResults: MemberTakeoffResult[])
   threeApi.update(project, { memberResults, aggregate: aggregateProject(memberResults) });
 }
 
+// ---------- 下敷き画像・縮尺(§5) ----------
+
+let underlay: UnderlayView | null = null;
+
+function scaleStatusText(): string {
+  if (!underlay) {
+    return "画像なし(PDFは画像化して読み込んでください。PDF直接読み込みは将来対応)";
+  }
+  return underlay.scaleSet
+    ? `縮尺設定済み: ${underlay.mmPerPx.toFixed(2)} mm/px`
+    : "縮尺未設定 — 「縮尺を設定」で図面上の2点をクリックし、実寸(mm)を入力してください。縮尺未設定では拾い出しできません";
+}
+
+function updateUnderlayUi(): void {
+  document.getElementById("scale-status")!.textContent = scaleStatusText();
+  (document.getElementById("btn-scale") as HTMLButtonElement).disabled = !underlay;
+  (document.getElementById("btn-underlay-clear") as HTMLButtonElement).disabled = !underlay;
+  planApi?.redraw();
+}
+
+function loadUnderlayImage(dataUrl: string, keep?: Partial<UnderlayView>): void {
+  const img = new Image();
+  img.onload = () => {
+    underlay = {
+      img,
+      imageDataUrl: dataUrl,
+      // 仮縮尺: 画像幅 = 20m として表示(縮尺設定で確定するまで scaleSet=false)
+      mmPerPx: keep?.mmPerPx ?? 20000 / img.width,
+      offsetX: keep?.offsetX ?? 0,
+      offsetY: keep?.offsetY ?? 0,
+      opacity: keep?.opacity ?? Number((document.getElementById("underlay-opacity") as HTMLInputElement).value),
+      scaleSet: keep?.scaleSet ?? false,
+    };
+    updateUnderlayUi();
+  };
+  img.src = dataUrl;
+}
+
+function handleUnderlayFile(file: File): void {
+  const reader = new FileReader();
+  reader.onload = () => loadUnderlayImage(String(reader.result));
+  reader.readAsDataURL(file);
+}
+
+for (const id of ["underlay-file", "underlay-camera"]) {
+  document.getElementById(id)!.addEventListener("change", (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (f) handleUnderlayFile(f);
+    (e.target as HTMLInputElement).value = "";
+  });
+}
+
+document.getElementById("btn-scale")!.addEventListener("click", () => {
+  if (!underlay) return;
+  planApi?.startScaleCalibration();
+  document.getElementById("scale-status")!.textContent =
+    "縮尺計測中: 図面上の2点(寸法が分かる範囲)をクリックしてください(Escで中止)";
+});
+
+document.getElementById("underlay-opacity")!.addEventListener("input", (e) => {
+  if (underlay) {
+    underlay.opacity = Number((e.target as HTMLInputElement).value);
+    planApi?.redraw();
+  }
+});
+
+document.getElementById("btn-underlay-clear")!.addEventListener("click", () => {
+  underlay = null;
+  updateUnderlayUi();
+});
+
 // ---------- 2D平面配置 ----------
 
 planApi = initPlan({
@@ -805,7 +898,32 @@ planApi = initPlan({
       });
     }
   },
+  getUnderlay: () => underlay,
+  onScalePoints: (p1, p2) => {
+    if (!underlay) return;
+    const measured = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    if (measured < 1) {
+      alert("2点が近すぎます。もう一度指定してください");
+      updateUnderlayUi();
+      return;
+    }
+    const input = prompt("クリックした2点間の実際の距離を mm で入力してください(例: 5400)");
+    const real = input === null ? NaN : Number(input.trim());
+    if (!Number.isFinite(real) || real <= 0) {
+      alert("縮尺は設定されませんでした(数値を入力してください)");
+      updateUnderlayUi();
+      return;
+    }
+    // 1点目を固定したまま画像を実寸に合わせる
+    const factor = real / measured;
+    underlay.mmPerPx *= factor;
+    underlay.offsetX = p1.x - (p1.x - underlay.offsetX) * factor;
+    underlay.offsetY = p1.y - (p1.y - underlay.offsetY) * factor;
+    underlay.scaleSet = true;
+    updateUnderlayUi();
+  },
 });
+updateUnderlayUi();
 
 document.getElementById("btn-save")!.addEventListener("click", saveProject);
 document.getElementById("file-load")!.addEventListener("change", (e) => {

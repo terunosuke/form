@@ -54,6 +54,20 @@
     <section id="plan-section">
       <h2>4. 平面配置(2D)</h2>
       <div class="row">
+        <label class="file-label">図面・スケッチ画像を読み込む
+          <input id="underlay-file" type="file" accept="image/*" />
+        </label>
+        <label class="file-label">カメラで撮影
+          <input id="underlay-camera" type="file" accept="image/*" capture="environment" />
+        </label>
+        <button id="btn-scale" type="button" disabled>縮尺を設定(2点+実寸)</button>
+        <label class="inline">透過
+          <input id="underlay-opacity" type="range" min="0.1" max="1" step="0.1" value="0.6" />
+        </label>
+        <button id="btn-underlay-clear" type="button" disabled>画像を消去</button>
+        <span id="scale-status" class="hint">画像なし(PDFは画像化して読み込んでください。PDF直接読み込みは将来対応)</span>
+      </div>
+      <div class="row">
         <select id="plan-mode">
           <option value="select">選択・移動</option>
           <option value="wall">壁を作図(2点)</option>

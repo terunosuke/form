@@ -21,6 +21,17 @@ export interface PlanPlacement {
   z?: number;
 }
 
+/** 下敷き画像(図面・スケッチ)と縮尺(§5・§26)。縮尺未設定では拾い出し不可 */
+export interface Underlay {
+  imageDataUrl: string;
+  /** 画像1pxあたりのmm。縮尺設定で確定する */
+  mmPerPx: number;
+  offsetX: number; // 画像左上の平面座標 (mm)
+  offsetY: number;
+  opacity: number; // 0〜1
+  scaleSet: boolean; // 縮尺設定済みか
+}
+
 export type MemberInput =
   | ({ kind: "wall"; placement?: PlanPlacement } & WallTakeoffInput)
   | ({ kind: "column"; placement?: PlanPlacement } & ColumnTakeoffInput)
@@ -38,6 +49,8 @@ export interface Project {
   unit: "mm"; // 初期版は mm 固定
   materials: MaterialConfig; // 材料マスタ+配置ピッチ(プロジェクトコピー)
   members: MemberInput[]; // 構造部材(形状・寸法・型枠面の指定)
+  /** 元画像と縮尺(§26)。未読み込みなら undefined */
+  underlay?: Underlay;
   /** 手動修正内容(将来: 3D画面での個別修正を記録) */
   manualAdjustments: unknown[];
 }

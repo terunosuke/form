@@ -2,10 +2,16 @@
 // 部材の作図(壁・梁 = 2点、柱・スラブ・フーチング = 対角2点)、選択、移動を行う。
 // 平面配置(placement)は表示・作図用であり、数量計算には影響しない。
 
-import type { MemberInput, PlanPlacement } from "../core/project.js";
+import type { MemberInput, PlanPlacement, Underlay } from "../core/project.js";
 
 export interface PlanApi {
   redraw(): void;
+  /** 縮尺設定モード開始(次の2クリックを計測点として扱う) */
+  startScaleCalibration(): void;
+}
+
+export interface UnderlayView extends Underlay {
+  img: HTMLImageElement;
 }
 
 export interface PlanOptions {
@@ -18,6 +24,10 @@ export interface PlanOptions {
   createMember(kind: MemberInput["kind"]): MemberInput;
   /** 選択変更(カードのハイライト用)。null = 選択解除 */
   onSelect(index: number | null): void;
+  /** 下敷き画像(なければ null) */
+  getUnderlay?(): UnderlayView | null;
+  /** 縮尺計測の2点が確定したとき(world mm) */
+  onScalePoints?(p1: Point, p2: Point): void;
 }
 
 type Mode = "select" | MemberInput["kind"];
@@ -47,6 +57,8 @@ export function initPlan(opts: PlanOptions): PlanApi {
 
   let firstPoint: Point | null = null; // 2点作図の1点目
   let cursor: Point | null = null;
+  let scaleMode = false; // 縮尺計測モード
+  let scalePoint: Point | null = null; // 計測1点目(スナップなしの生座標)
   let selected: number | null = null;
   let dragging: { index: number; offsetX: number; offsetY: number } | null = null;
   let panning: { startX: number; startY: number; panX0: number; panY0: number } | null = null;
@@ -233,10 +245,51 @@ export function initPlan(opts: PlanOptions): PlanApi {
     ctx.setLineDash([]);
   }
 
+  function drawUnderlay(): void {
+    const ul = opts.getUnderlay?.();
+    if (!ul) return;
+    ctx.save();
+    ctx.globalAlpha = ul.opacity;
+    ctx.drawImage(
+      ul.img,
+      sx(ul.offsetX),
+      sy(ul.offsetY),
+      ul.img.width * ul.mmPerPx * scale,
+      ul.img.height * ul.mmPerPx * scale,
+    );
+    ctx.restore();
+  }
+
+  function drawScaleMarkers(): void {
+    if (!scaleMode) return;
+    ctx.fillStyle = "#e01b24";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(
+      scalePoint === null ? "縮尺計測: 1点目をクリック" : "縮尺計測: 2点目をクリック",
+      8, 16,
+    );
+    if (scalePoint) {
+      ctx.beginPath();
+      ctx.arc(sx(scalePoint.x), sy(scalePoint.y), 5, 0, Math.PI * 2);
+      ctx.fill();
+      if (cursor) {
+        ctx.strokeStyle = "#e01b24";
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(sx(scalePoint.x), sy(scalePoint.y));
+        ctx.lineTo(sx(cursor.x), sy(cursor.y));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
   function redraw(): void {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#fbfcfd";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawUnderlay();
     drawGrid();
     const members = opts.getMembers();
     // 面もの(スラブ・フーチング)を先に、線もの・柱を後に描く
@@ -247,6 +300,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
     });
     for (const i of order) drawMember(members[i]!, i);
     drawPreview();
+    drawScaleMarkers();
     // スケール表示
     ctx.fillStyle = "#666";
     ctx.font = "11px sans-serif";
@@ -300,6 +354,19 @@ export function initPlan(opts: PlanOptions): PlanApi {
       e.preventDefault();
       return;
     }
+    if (scaleMode) {
+      // 縮尺計測はスナップせず生座標で拾う
+      if (scalePoint === null) {
+        scalePoint = p;
+      } else {
+        const p1 = scalePoint;
+        scaleMode = false;
+        scalePoint = null;
+        opts.onScalePoints?.(p1, p);
+      }
+      redraw();
+      return;
+    }
     if (mode() === "select") {
       const hit = hitTest(p);
       selected = hit;
@@ -342,7 +409,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
       redraw();
       return;
     }
-    if (firstPoint) redraw();
+    if (firstPoint || (scaleMode && scalePoint)) redraw();
   });
 
   window.addEventListener("mouseup", () => {
@@ -369,6 +436,8 @@ export function initPlan(opts: PlanOptions): PlanApi {
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       firstPoint = null;
+      scaleMode = false;
+      scalePoint = null;
       redraw();
     }
   });
@@ -379,5 +448,13 @@ export function initPlan(opts: PlanOptions): PlanApi {
   });
 
   redraw();
-  return { redraw };
+  return {
+    redraw,
+    startScaleCalibration() {
+      scaleMode = true;
+      scalePoint = null;
+      firstPoint = null;
+      redraw();
+    },
+  };
 }
