@@ -215,6 +215,11 @@ export function detectJunctions(members: MemberInput[]): JunctionCandidate[] {
       const u0 = Math.max(0, Math.min(t0, t1));
       const u1 = Math.min(beam.length, Math.max(t0, t1));
       if (u1 - u0 < 50) continue;
+      // 高さ関係: 梁のZが未指定(0)なら「壁の天端に梁の下端」として扱う。
+      // 明示的なZ指定があり壁天端から離れている場合は同一ラインでも対象外
+      const beamZ = beam.placement.z ?? 0;
+      const wallTop = (wall.placement.z ?? 0) + wall.height;
+      if (beamZ > 1 && Math.abs(beamZ - wallTop) > 100) continue;
       out.push({
         id: `${wall.memberId}~${beam.memberId}`,
         kind: "wall_beam",
@@ -223,7 +228,8 @@ export function detectJunctions(members: MemberInput[]): JunctionCandidate[] {
         uRange: [fix(u0), fix(u1)],
         defaultPolicy: "deduct",
         description:
-          `${wall.memberId}(壁)の上に ${beam.memberId}(梁)が乗るため、` +
+          `${wall.memberId}(壁)の上に ${beam.memberId}(梁)が乗ります: ` +
+          `梁下端を壁天端(Z=${fix(wallTop)})に合わせ、` +
           `梁底の重なり ${fix(u0)}〜${fix(u1)}mm を控除します`,
       });
     }
@@ -295,6 +301,11 @@ export function applyJunctions(
     if (c.kind === "wall_beam" && m.kind === "beam" && c.uRange) {
       // 壁の上に梁が乗る: 梁底の壁部分を控除(梁側は控除しない)
       m.bottomDeductionsU = [...(m.bottomDeductionsU ?? []), c.uRange];
+      // 「壁の天端に梁の下端」: 梁のZが未指定(0)なら壁天端に自動配置(3D表示)
+      const winner = byId.get(c.winnerId);
+      if (winner?.kind === "wall" && m.placement && (m.placement.z ?? 0) === 0) {
+        m.placement.z = fix((winner.placement?.z ?? 0) + winner.height);
+      }
     } else if ((m.kind === "wall" || m.kind === "beam") && c.uRange && c.vRange) {
       const region: Rect = {
         u: c.uRange[0],

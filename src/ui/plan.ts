@@ -127,6 +127,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
   let scaleMode = false; // 縮尺計測モード
   let scalePoint: Point | null = null; // 計測1点目(スナップなしの生座標)
   let orthoLock = false; // Shift 押下中: 水平/垂直に固定して作図
+  let hoverSnap: Point | null = null; // オブジェクトスナップ中の点(マーカー表示用)
 
   /** Shift 押下時、始点から水平または垂直(近い方)に固定する */
   function applyOrtho(from: Point, to: Point): Point {
@@ -233,6 +234,41 @@ export function initPlan(opts: PlanOptions): PlanApi {
       if (pointInPolygon(p, corners(members[i]!, i))) return i;
     }
     return null;
+  }
+
+  /** 部材のスナップ候補点(壁・梁 = 軸の始点/中点/終点、矩形 = 4隅) */
+  function snapPointsOf(m: MemberInput, index: number): Point[] {
+    const pl = placementOf(m, index);
+    const f = footprint(m);
+    if (f.axisBased) {
+      const rad = (pl.angleDeg * Math.PI) / 180;
+      const ex = pl.x + Math.cos(rad) * f.len;
+      const ey = pl.y + Math.sin(rad) * f.len;
+      return [
+        { x: pl.x, y: pl.y },
+        { x: (pl.x + ex) / 2, y: (pl.y + ey) / 2 },
+        { x: ex, y: ey },
+      ];
+    }
+    return corners(m, index);
+  }
+
+  /** オブジェクトスナップ(AutoCADのOSNAP相当)。画面上 12px 以内の候補点に吸着 */
+  function objectSnap(p: Point, excludeIndex: number | null): Point | null {
+    const tol = 12 / scale;
+    let best: Point | null = null;
+    let bestD = tol;
+    opts.getMembers().forEach((m, i) => {
+      if (i === excludeIndex) return;
+      for (const c of snapPointsOf(m, i)) {
+        const d = Math.hypot(p.x - c.x, p.y - c.y);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+    });
+    return best;
   }
 
   /** 選択中部材の編集ハンドル(world 座標)。壁・梁 = 端点、矩形 = 対角コーナー */
@@ -344,11 +380,21 @@ export function initPlan(opts: PlanOptions): PlanApi {
     }
   }
 
+  function drawSnapMarker(): void {
+    if (!hoverSnap) return;
+    // AutoCAD風の緑スナップマーカー(端点・隅)
+    const mx = sx(hoverSnap.x);
+    const my = sy(hoverSnap.y);
+    ctx.strokeStyle = "#2ea043";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mx - 7, my - 7, 14, 14);
+  }
+
   function drawPreview(): void {
     if (!firstPoint || !cursor) return;
     const md = mode();
     const isLine = md === "wall" || md === "beam";
-    const p2 = snap(isLine ? applyOrtho(firstPoint, cursor) : cursor);
+    const p2 = hoverSnap ?? snap(isLine ? applyOrtho(firstPoint, cursor) : cursor);
     ctx.strokeStyle = "#e01b24";
     ctx.setLineDash([5, 5]);
     if (isLine) {
@@ -429,6 +475,7 @@ export function initPlan(opts: PlanOptions): PlanApi {
     });
     for (const i of order) drawMember(members[i]!, i);
     drawPreview();
+    drawSnapMarker();
     drawScaleMarkers();
     // スケール表示
     ctx.fillStyle = "#666";
@@ -443,13 +490,17 @@ export function initPlan(opts: PlanOptions): PlanApi {
     const md = mode();
     if (md === "select" || !firstPoint) return;
     const p1 = firstPoint;
+    // オブジェクトスナップが効いていれば頂点に正確に合わせる(直交・グリッドより優先)
+    const os = objectSnap(p2raw, null);
     // 線もの(壁・梁)は Shift で水平/垂直固定
     const constrained = md === "wall" || md === "beam" ? applyOrtho(p1, p2raw) : p2raw;
-    const p2 = snap(constrained);
+    const p2 = os ?? snap(constrained);
     firstPoint = null;
 
     if (md === "wall" || md === "beam") {
-      const len = Math.round(Math.hypot(p2.x - p1.x, p2.y - p1.y) / SNAP) * SNAP;
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      // スナップ点までは正確な長さ(1mm)、それ以外は 50mm 丸め
+      const len = os ? Math.round(dist) : Math.round(dist / SNAP) * SNAP;
       if (len < 100) return; // 短すぎる線は無視
       const angleDeg = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
       const m = opts.createMember(md);
@@ -522,9 +573,9 @@ export function initPlan(opts: PlanOptions): PlanApi {
       redraw();
       return;
     }
-    // 作図モード
+    // 作図モード(1点目もオブジェクトスナップ優先)
     if (firstPoint === null) {
-      firstPoint = snap(p);
+      firstPoint = objectSnap(p, null) ?? snap(p);
       showBubble(firstPoint);
     } else {
       finishDraw(p);
@@ -546,7 +597,10 @@ export function initPlan(opts: PlanOptions): PlanApi {
       const members = opts.getMembers();
       const m = members[dragging.index]!;
       const prev = m.placement ?? placementOf(m, dragging.index);
-      const snapped = snap(cursor);
+      const os = objectSnap(cursor, dragging.index);
+      hoverSnap = dragging.mode === "start" || dragging.mode === "end" ? os : null;
+      const snapped = os ?? snap(cursor);
+      const lenUnit = os ? 1 : SNAP;
       if (dragging.mode === "move") {
         const nx = Math.round((cursor.x - dragging.offsetX) / SNAP) * SNAP;
         const ny = Math.round((cursor.y - dragging.offsetY) / SNAP) * SNAP;
@@ -558,7 +612,8 @@ export function initPlan(opts: PlanOptions): PlanApi {
           x: prev.x + Math.cos(rad) * m.length,
           y: prev.y + Math.sin(rad) * m.length,
         };
-        const len = Math.round(Math.hypot(end.x - snapped.x, end.y - snapped.y) / SNAP) * SNAP;
+        const len =
+          Math.round(Math.hypot(end.x - snapped.x, end.y - snapped.y) / lenUnit) * lenUnit;
         if (len >= 100) {
           m.length = len;
           m.placement = {
@@ -570,7 +625,8 @@ export function initPlan(opts: PlanOptions): PlanApi {
           };
         }
       } else if (dragging.mode === "end" && (m.kind === "wall" || m.kind === "beam")) {
-        const len = Math.round(Math.hypot(snapped.x - prev.x, snapped.y - prev.y) / SNAP) * SNAP;
+        const len =
+          Math.round(Math.hypot(snapped.x - prev.x, snapped.y - prev.y) / lenUnit) * lenUnit;
         if (len >= 100) {
           m.length = len;
           m.placement = {
@@ -599,14 +655,21 @@ export function initPlan(opts: PlanOptions): PlanApi {
       redraw();
       return;
     }
+    // 作図モード中はオブジェクトスナップ候補を追跡(マーカー表示)
+    const prevSnap = hoverSnap;
+    hoverSnap = mode() !== "select" && !scaleMode ? objectSnap(cursor, null) : null;
     if (firstPoint) {
       // 吹き出しの参考値(現在カーソル位置までのΔ)を更新
-      const ref = snap(mode() === "wall" || mode() === "beam"
+      const ref = hoverSnap ?? snap(mode() === "wall" || mode() === "beam"
         ? applyOrtho(firstPoint, cursor) : cursor);
       dimX.placeholder = String(Math.round(ref.x - firstPoint.x));
       dimY.placeholder = String(Math.round(ref.y - firstPoint.y));
     }
-    if (firstPoint || (scaleMode && scalePoint)) redraw();
+    const snapChanged =
+      (prevSnap === null) !== (hoverSnap === null) ||
+      (prevSnap !== null && hoverSnap !== null &&
+        (prevSnap.x !== hoverSnap.x || prevSnap.y !== hoverSnap.y));
+    if (firstPoint || (scaleMode && scalePoint) || snapChanged) redraw();
   });
 
   window.addEventListener("mouseup", () => {

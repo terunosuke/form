@@ -160,6 +160,49 @@ describe("壁×梁の同一ライン(壁の上に梁が乗る)", () => {
     expect(g.deductionsLeft ?? []).toEqual([]);
   });
 
+  it("梁のZ未指定(0)なら検出し、適用時に梁下端を壁天端へ自動配置する", () => {
+    const wall: MemberInput = {
+      kind: "wall", memberId: "W12", length: 4000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 0, y: 0, angleDeg: 0 },
+    };
+    const beam: MemberInput = {
+      kind: "beam", memberId: "G12", length: 6000, width: 300, depth: 600,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: 0, y: 0, angleDeg: 0 }, // z 未指定
+    };
+    const cands = detectJunctions([wall, beam]);
+    expect(cands).toHaveLength(1);
+    expect(cands[0]!.description).toContain("壁天端(Z=3000)");
+
+    const applied = applyJunctions([wall, beam], cands, {});
+    const g = applied.find((m) => m.memberId === "G12")!;
+    expect(g.placement!.z).toBe(3000); // 壁天端に自動配置
+    expect(beam.placement!.z).toBeUndefined(); // 元データは不変
+  });
+
+  it("梁のZが明示されて壁天端から離れていれば対象外 / 一致すればZは変えない", () => {
+    const wall: MemberInput = {
+      kind: "wall", memberId: "W13", length: 4000, height: 3000, thickness: 200,
+      formworkSides: "both", placement: { x: 0, y: 0, angleDeg: 0 },
+    };
+    const floating: MemberInput = {
+      kind: "beam", memberId: "G13", length: 6000, width: 300, depth: 600,
+      sideFormLeft: true, sideFormRight: true, bottomForm: true,
+      placement: { x: 0, y: 0, angleDeg: 0, z: 6000 }, // 壁天端3000から離れている
+    };
+    expect(detectJunctions([wall, floating]).filter((c) => c.kind === "wall_beam"))
+      .toHaveLength(0);
+
+    const onTop: MemberInput = {
+      ...floating, memberId: "G14",
+      placement: { x: 0, y: 0, angleDeg: 0, z: 3000 },
+    } as MemberInput;
+    const cands = detectJunctions([wall, onTop]);
+    expect(cands).toHaveLength(1);
+    const applied = applyJunctions([wall, onTop], cands, {});
+    expect(applied.find((m) => m.memberId === "G14")!.placement!.z).toBe(3000); // 維持
+  });
+
   it("直交する壁と梁は同一ライン扱いしない(控除しない)", () => {
     const wall: MemberInput = {
       kind: "wall", memberId: "W11", length: 4000, height: 3000, thickness: 200,
